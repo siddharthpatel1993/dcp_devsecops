@@ -1,0 +1,2 @@
+[server]
+k8smaster ansible_host=18.205.151.126 ansible_user=ubuntu ansible_password=ubuntu123

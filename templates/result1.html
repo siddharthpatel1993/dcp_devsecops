@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css">
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>
+
+
+{% block body %}
+
+<!--<meta http-equiv="refresh" content="5"> -->
+<section id="intro">
+    <div class="intro-container wow fadeIn">
+        <form method="POST" action="/result2" target="_blank">
+            <div class="form-group">
+            <iframe width="1000" height="500" src="https://www.youtube.com/embed/{{text}}">
+            </iframe>
+            {% csrf_token %}
+	    <p>{{text}}</p>
+	    <p class="w3-medium"><a href="/input">Input Page</a></p>
+            <p class="w3-medium"><a href="/result2">Transcribe</a></p> 
+	    <p class="w3-medium"><a href="/chatbot">AI helper</a></p>
+	    <p class="w3-medium"><a href="/notes">Notes</a></p>
+            </div>
+        </form>
+    </div>
+  </section>
+  
+
+
+
+
+
+
+{% endblock body %}

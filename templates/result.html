@@ -1,0 +1,52 @@
+<html>
+
+<head>
+    <title>Your HTML Page</title>
+    <!--<meta http-equiv="refresh" content="10"> -->
+
+    <style>
+        body {
+
+            margin: 2% 10%;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div>
+
+
+	    <!-- <h3 style="text-align:center">This Page will auto-reload in 10 seconds, once done you may close this tab</h3> -->
+        {% autoescape off %}
+
+        <!--<div style="color:black; ">
+            <div>
+		    <center><p>{{ htmlcode }}</p></center>
+            </div>
+	</div>
+	<h3 style="text-align:center">ACTION YOU WILL PERFORM</h3>
+        <div style="color:black; ">
+            <div>
+		    <center><p>{{ htmlcode }}</p><center>
+            </div>
+	</div> -->
+
+        <hr>
+        <h3 style="text-align:center">LOGS IS GENERATED BELOW</h3>
+        <div>
+            <code>
+                <pre>
+                    <p style="background-color: gainsboro; text-align: center; font-size:large;">{{ lines }}</p>
+                </pre>
+            </code>
+
+        </div>
+        {% endautoescape %}
+    </div>
+
+    </div>
+
+
+</html>
+

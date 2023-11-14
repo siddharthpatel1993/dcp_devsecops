@@ -1,0 +1,21 @@
+---
+ - name: Playbook to install Django webserver
+   hosts: server
+   remote_user: ubuntu
+   gather_facts: yes
+   connection: ssh
+
+   tasks:
+           - name: Deleting the resources from yaml file
+             shell: |
+               kubectl delete -f k8s.yml
+
+           - name: copy the file
+             copy:
+               src: k8s.yml
+               dest: k8s.yml
+
+           - name: Applying the new yaml file
+             shell: |
+               kubectl apply -f k8s.yml
+
