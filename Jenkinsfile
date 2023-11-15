@@ -92,6 +92,8 @@ pipeline{
                 script {
                     sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG}"
                     sh "docker rmi ${IMAGE_NAME}:latest"
+                    sh "docker rm -f $(docker ps -a -q)"
+                    sh "docker rmi -f $(docker images -q)"
                 }
             }
         }
