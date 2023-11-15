@@ -11,7 +11,7 @@
     <div class="intro-container wow fadeIn">
         <form method="POST" action="/result2" target="_blank">
             <div class="form-group">
-            <iframe width="1000" height="500" src="https://www.youtube.com/embed/{{text}}">
+            <iframe width="1000" height="500" src="https://www.youtube.com/embed/{{text}}" title="Main content" name="contents">
             </iframe>
             {% csrf_token %}
 	    <p>{{text}}</p>
