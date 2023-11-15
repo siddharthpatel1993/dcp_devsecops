@@ -3,7 +3,7 @@ pipeline{
 
     environment {
         DJANGO_SETTINGS_MODULE="LearnEasyAI.settings"
-        APP_NAME = "django_test"
+        APP_NAME = "dcp_devsecops"
         RELEASE = "1.0.0"
         DOCKER_USER = "siddharthgopalpatel"
         DOCKER_PASS = 'dockerhub'
@@ -38,7 +38,7 @@ pipeline{
             steps {
                 script {
                     withSonarQubeEnv(credentialsId: 'jenkins_sonarqube_token') {
-                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=test -Dsonar.sources=. -Dsonar.host.url=http://44.210.123.179 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
+                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=test -Dsonar.sources=. -Dsonar.host.url=http://3.87.160.78 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
                     }
                 }
             }

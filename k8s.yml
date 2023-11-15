@@ -17,7 +17,7 @@ spec:
         app: mydeploy
     spec:
       containers:
-      - image: siddharthgopalpatel/django_test:latest
+      - image: siddharthgopalpatel/dcp_devsecops:latest
         name: sidd
         volumeMounts:
           - name: data
