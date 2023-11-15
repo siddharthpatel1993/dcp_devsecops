@@ -3,29 +3,24 @@ from . import transcribe
 from django.http import JsonResponse
 import openai
 from decouple import config
-from django.views.decorators.http import require_http_methods
 
 text = ''
 result=''
 openai_api_key = config('OPENAI_API_KEY')
 openai.api_key = openai_api_key
 
-@require_http_methods(["GET", "POST"])
 def index(request):
     return(render(request, "index.html"))
 
-@require_http_methods(["GET", "POST"])
 def inputfile(request):
     return(render(request, "input.html"))
 
-@require_http_methods(["GET", "POST"])
 def result1(request):
     global text
     if request.method == "POST":
         text = request.POST.get("youtube_url")
         return(render(request, "result1.html", {"text": text}))
 
-@require_http_methods(["GET", "POST"])
 def result2(request):
     global result
     #if request.method == "POST":
@@ -43,7 +38,6 @@ def ask_openai(message):
     answer = response.choices[0].message.content.strip()
     return answer
 
-@require_http_methods(["GET", "POST"])
 def chatbot(request):
     if request.method == 'POST':
         message = request.POST.get('message')
@@ -51,7 +45,6 @@ def chatbot(request):
         return JsonResponse({'message': message, 'response': response})
     return render(request, 'chatbot.html')
 
-@require_http_methods(["GET", "POST"])
 def notes(request):
     result = transcribe.process_input(text)
     def comp(PROMPT, MaxToken=50, outputs=3):
