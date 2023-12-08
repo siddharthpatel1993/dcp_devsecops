@@ -22,12 +22,12 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /var/log/gunicorn
-              #env:
-              #- name: OPENAI_API_KEY
-              #valueFrom:
-              # secretKeyRef:
-              #     name: db-secret  ## Name of the secret created
-              #     key: siddnidhi  ## The key to fetch
+        env:
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: db-secret  ## Name of the secret created
+                key: siddnidhi  ## The key to fetch
       volumes:
       - name: data
         persistentVolumeClaim:
