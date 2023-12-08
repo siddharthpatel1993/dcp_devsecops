@@ -25,7 +25,7 @@ pipeline{
             }
         }
 
-        stage("Initial Test") {
+        stage("Unit Test") {
             steps {
                 script {
                         sh "python3 -m pip install -r requirements.txt"
