@@ -2,7 +2,6 @@ FROM python:3.9
 ENV DEBBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
-ENV OPENAI_API_KEY='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'
 RUN apt-get update
 RUN apt-get install -y git python3 python3-pip
 RUN python3 -m pip install --upgrade pip
