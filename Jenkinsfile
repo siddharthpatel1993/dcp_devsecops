@@ -38,7 +38,7 @@ pipeline{
             steps {
                 script {
                     withSonarQubeEnv(credentialsId: 'jenkins_sonarqube_token') {
-                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=project_devops -Dsonar.sources=. -Dsonar.host.url=http://3.87.160.78 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
+                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=project_devops -Dsonar.sources=. -Dsonar.host.url=http://18.206.253.87 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
                     }
                 }
             }
@@ -53,6 +53,16 @@ pipeline{
             }
 
         }
+
+        stage("Trivy Scan") {
+            steps {
+                script {
+                   sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln  --exit-code 0 --severity HIGH,CRITICAL --format table')
+                }
+            }
+
+        }
+
 
         stage("Build & Push Docker Image") {
             steps {
@@ -70,14 +80,6 @@ pipeline{
 
         }
 
-        stage("Trivy Scan") {
-            steps {
-                script {
-                   sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln  --exit-code 0 --severity HIGH,CRITICAL --format table')
-                }
-            }
-
-        }
 
         stage("Excecute ansible") {
             steps {
