@@ -77,7 +77,7 @@ pipeline{
                 script {
                    sh "mkdir trivy_report"
                    //sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image nginx --no-progress --scanners vuln --format  template --template \"@/usr/local/share/trivy/templates/html.tpl\" -o trivy_report/trivy-infrastructure-scanning-report_${BUILD_NUMBER}')
-                   sh ('trivy image nginx --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-infrastructure-scanning-report.html')
+                   sh ('trivy image nginx --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-infrastructure-scanning-report${BUILD_NUMBER}.html')
                 }
             }
 
@@ -104,6 +104,15 @@ pipeline{
       //      }
       //  }
       }
+
+        stage ('Sending Report to S3') {
+            steps {
+                script {
+                    aws s3 sync trivy_report/ s3://delivery-champion-mana-devsecops-2023-scanning-reports
+                }
+            }
+        }
+
 
     post {
         failure {
