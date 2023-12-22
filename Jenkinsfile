@@ -77,7 +77,7 @@ pipeline{
                 script {
                    sh "mkdir trivy_report"
                    //sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image nginx --no-progress --scanners vuln --format  template --template \"@/usr/local/share/trivy/templates/html.tpl\" -o trivy_report/trivy-image-scanning-report_${BUILD_NUMBER}')
-                   sh ('trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-image-scanning-report${BUILD_NUMBER}.html')
+                   sh ('trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-image-scanning-report${BUILD_NUMBER}.html')
                 }
             }
 
