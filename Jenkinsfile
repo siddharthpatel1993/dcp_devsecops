@@ -72,19 +72,27 @@ pipeline{
         }
 
 
-        stage("Trivy Scan") {
+        stage("Trivy Image Scan") {
             steps {
                 script {
                    sh "mkdir trivy_report"
-                   //sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image nginx --no-progress --scanners vuln --format  template --template \"@/usr/local/share/trivy/templates/html.tpl\" -o trivy_report/trivy-image-scanning-report_${BUILD_NUMBER}')
-                   sh ('trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-image-scanning-report${BUILD_NUMBER}.html')
+                   //sh ('docker run -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln --exit-code 0 --severity HIGH,CRITICAL --format table')
+                   sh ('trivy image siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG} --no-progress --scanners vuln --severity HIGH,CRITICAL --format template --template "@/usr/local/share/trivy/templates/html.tpl" -o trivy_report/trivy-image-scanning-report${BUILD_NUMBER}.html')
                 }
             }
 
         }
 
+        stage("Sending Scan Report to AWS S3 Bucket") {
+            steps {
+                script {
+                    sh "aws s3 sync trivy_report/ s3://delivery-champion-mana-devsecops-2023-scanning-reports"
+                }
+            }
+        }
 
-        stage("Excecute ansible") {
+
+        stage("Deployment using ansible") {
             steps {
                 script {
                    ansiblePlaybook installation: 'test', inventory: 'inventory', playbook: 'test.yml'
@@ -104,13 +112,6 @@ pipeline{
       //      }
       //  }
 
-        stage("Sending Report to S3") {
-            steps {
-                script {
-                    sh "aws s3 sync trivy_report/ s3://delivery-champion-mana-devsecops-2023-scanning-reports"
-                }
-            }
-        }
      }
 
     post {
