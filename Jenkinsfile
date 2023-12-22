@@ -108,7 +108,7 @@ pipeline{
         stage ('Sending Report to S3') {
             steps {
                 script {
-                    aws s3 sync trivy_report/ s3://delivery-champion-mana-devsecops-2023-scanning-reports
+                    aws s3 sync trivy_report/ s3\://delivery-champion-mana-devsecops-2023-scanning-reports
                 }
             }
         }
