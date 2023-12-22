@@ -103,7 +103,6 @@ pipeline{
       //          }
       //      }
       //  }
-      }
 
         stage("Sending Report to S3") {
             steps {
@@ -112,7 +111,7 @@ pipeline{
                 }
             }
         }
-
+     }
 
     post {
         failure {
