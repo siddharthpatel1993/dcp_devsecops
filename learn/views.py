@@ -49,7 +49,7 @@ def notes(request):
     result = transcribe.process_input(text)
     def comp(PROMPT, MaxToken=50, outputs=3):
         response = openai.Completion.create(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             prompt=PROMPT,
             max_tokens=MaxToken,
             n=outputs
