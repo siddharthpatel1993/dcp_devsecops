@@ -1,2 +1,2 @@
 [server]
-k8smaster ansible_host=34.203.228.96 ansible_user=ubuntu
+k8smaster ansible_host=44.202.146.65 ansible_user=ubuntu

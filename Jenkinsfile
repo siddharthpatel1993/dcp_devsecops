@@ -12,6 +12,13 @@ pipeline{
         OPENAI_API_KEY='apikey'
     }
 
+    options {
+        buildDiscarder logRotator( 
+                    daysToKeepStr: '1', 
+                    numToKeepStr: '1'
+            )
+    }
+
     stages{
         stage("Cleanup Workspace"){
             steps {
@@ -38,7 +45,7 @@ pipeline{
             steps {
                 script {
                     withSonarQubeEnv(credentialsId: 'jenkins_sonarqube_token') {
-                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=project_devops -Dsonar.sources=. -Dsonar.host.url=http://3.84.18.181 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
+                        sh "/opt/sonar-scanner/bin/sonar-scanner -Dsonar.projectKey=project_devops -Dsonar.sources=. -Dsonar.host.url=http://3.86.31.123 -Dsonar.python.coverage.reportPaths=coverage.xml -Dsonar.python.version=3 -Dsonar.projectVersion=${BUILD_NUMBER}"
                     }
                 }
             }
