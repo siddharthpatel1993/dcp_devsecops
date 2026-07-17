@@ -1,0 +1,105 @@
+# =============================================================================
+# ARGOCD APPLICATION — Connects Git repo to Kubernetes cluster
+# =============================================================================
+# What is this?
+#   - Tells ArgoCD: "watch THIS Git repo, deploy to THIS cluster/namespace"
+#   - One-time setup. After this, ArgoCD handles ALL deployments automatically.
+#
+# How ArgoCD works (pull-based GitOps):
+#   1. ArgoCD runs INSIDE the K8s cluster (installed via Helm)
+#   2. It watches the Git repo (polls every 3 min or webhook for instant)
+#   3. It compares: Git (desired state) vs Cluster (actual state)
+#   4. If different → auto-sync (apply changes with rolling update)
+#   5. If someone does manual kubectl → drift detected → auto-reverts (selfHeal)
+#
+# Benefits over push-based (Ansible/Jenkins kubectl):
+#   - Jenkins never needs cluster access (no SSH, no kubeconfig, no kubectl)
+#   - Git history = deployment history (who deployed what, when)
+#   - Rollback = git revert → ArgoCD syncs previous state
+#   - Drift protection = unauthorized changes auto-reverted
+#   - Multi-cluster = same repo, multiple ArgoCD instances
+#
+# Prerequisites:
+#   helm repo add argo https://argoproj.github.io/argo-helm
+#   helm install argocd argo/argo-cd -n argocd --create-namespace
+#
+# Apply this file:
+#   kubectl apply -f argocd-application.yml
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: learneasyai
+  namespace: argocd       # ArgoCD's own namespace
+  # Finalizer ensures ArgoCD cleans up K8s resources if Application is deleted
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # ===== SOURCE: Where to read desired state from =====
+  source:
+    # GitOps repo — contains ONLY K8s manifests (not app code)
+    # Why separate repo? App code changes ≠ infra changes
+    # App devs can't accidentally modify K8s config
+    repoURL: https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+    targetRevision: main       # branch to watch
+    path: .                    # directory within repo (. = root)
+
+  # ===== DESTINATION: Where to deploy to =====
+  destination:
+    server: https://kubernetes.default.svc    # this cluster (in-cluster)
+    namespace: project                         # target namespace
+
+  # ===== SYNC POLICY: How to handle changes =====
+  syncPolicy:
+    automated:
+      # prune: delete K8s resources that are removed from Git
+      # Without this: you remove a Service from Git, but it stays in cluster (orphan)
+      prune: true
+
+      # selfHeal: revert manual changes made outside Git
+      # Example: someone does kubectl edit deployment → ArgoCD reverts to Git state
+      # This is DRIFT DETECTION + AUTO-REMEDIATION
+      selfHeal: true
+
+    syncOptions:
+      # Create namespace if it doesn't exist
+      - CreateNamespace=true
+      # Apply out-of-sync resources only (faster than full sync)
+      - ApplyOutOfSyncOnly=true
+
+    # Retry on failure (network glitches, temporary API server issues)
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+
+---
+# =============================================================================
+# ARGOCD PROJECT — RBAC for which repos/clusters this app can access
+# =============================================================================
+# Optional but recommended for multi-team environments
+# Restricts: which Git repos, which clusters, which namespaces this app can use
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: devsecops-project
+  namespace: argocd
+spec:
+  description: "DevSecOps application deployments"
+  # Allowed source repos (only our GitOps repo)
+  sourceRepos:
+    - https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+  # Allowed destinations (only project namespace in this cluster)
+  destinations:
+    - namespace: project
+      server: https://kubernetes.default.svc
+  # Allow all resource types (Deployment, Service, Ingress, etc.)
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

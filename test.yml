@@ -1,21 +1,38 @@
----
- - name: Playbook to install Django webserver
-   hosts: server
-   remote_user: ubuntu
-   gather_facts: yes
-   connection: ssh
+# =============================================================================
+# DEPRECATED — This Ansible playbook is no longer used
+# =============================================================================
+# Old method: Jenkins → SSH to K8s master → kubectl delete → kubectl apply
+# Problems:
+#   - kubectl delete causes DOWNTIME (all pods killed before new ones created)
+#   - Jenkins needs SSH access to K8s master (security risk)
+#   - No drift detection (manual kubectl changes go undetected)
+#   - No audit trail (who deployed what?)
+#   - Rollback = re-run pipeline with old code (slow, error-prone)
+#
+# Replaced by: ArgoCD GitOps (see argocd-application.yml)
+# New method: Jenkins → updates image tag in Git → ArgoCD auto-syncs
+# Benefits:
+#   - Zero-downtime (rolling update with readiness probes)
+#   - No SSH/kubectl needed from Jenkins
+#   - Drift detection + auto-revert (selfHeal: true)
+#   - Rollback = git revert
+#   - Full audit trail in git log
+#
+# This file kept for reference only. Do NOT use.
+# =============================================================================
 
-   tasks:
-           - name: Deleting the resources from yaml file
-             shell: |
-               kubectl delete -f k8s.yml
-
-           - name: copy the file
-             copy:
-               src: k8s.yml
-               dest: k8s.yml
-
-           - name: Applying the new yaml file
-             shell: |
-               kubectl apply -f k8s.yml
-
+# --- OLD PLAYBOOK (for reference) ---
+# - name: Playbook to install Django webserver
+#   hosts: server
+#   remote_user: ubuntu
+#   gather_facts: yes
+#   connection: ssh
+#   tasks:
+#     - name: Deleting the resources from yaml file
+#       shell: kubectl delete -f k8s.yml      ← CAUSES DOWNTIME
+#     - name: copy the file
+#       copy:
+#         src: k8s.yml
+#         dest: k8s.yml
+#     - name: Applying the new yaml file
+#       shell: kubectl apply -f k8s.yml

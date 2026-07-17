@@ -1,0 +1,46 @@
+# =============================================================================
+# .dockerignore — Excludes files from Docker build context
+# Without this, ADD/COPY sends everything to Docker daemon (slow + insecure)
+# =============================================================================
+
+# Git (no need for git history in production image)
+.git
+.gitignore
+
+# Python cache (regenerated at runtime)
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+
+# Virtual environments (we install fresh in Docker)
+.venv
+venv
+env
+
+# IDE files
+.vscode
+.idea
+*.swp
+
+# Environment/secrets (NEVER ship to image — use K8s Secrets or Vault)
+.env
+*.env
+.password*
+
+# Test/CI files (not needed in production)
+pytest.ini
+coverage.xml
+.coverage
+test.yml
+inventory
+trivy_report/
+
+# Database (should use external DB in production, not SQLite in image)
+db.sqlite3
+
+# Docker/K8s config (meta files, not app code)
+Dockerfile
+docker-compose.yml
+Jenkinsfile
+k8s.yml

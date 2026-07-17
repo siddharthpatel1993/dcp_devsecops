@@ -1,0 +1,104 @@
+# =============================================================================
+# KYVERNO POLICY — Reject Unsigned Images
+# =============================================================================
+# What this does:
+#   - Checks EVERY pod being deployed to the cluster
+#   - Verifies the container image has a valid Cosign signature
+#   - If signature is missing or invalid → pod REJECTED (never starts)
+#   - If signature is valid → pod allowed to run
+#
+# Why this matters:
+#   - Without this: anyone can deploy any image (even malicious ones)
+#   - With this: ONLY images signed by our CI/CD pipeline can run
+#   - Even if attacker gets kubectl access, they can't run unsigned images
+#
+# How it works:
+#   1. Developer pushes code → CI/CD builds → Trivy scans → Cosign signs → pushes
+#   2. ArgoCD/Ansible deploys to K8s → Kyverno intercepts the request
+#   3. Kyverno asks: "Does this image have a valid signature from our key?"
+#      → YES: pod is created
+#      → NO: pod is rejected with clear error message
+#
+# Prerequisites:
+#   - Kyverno installed: helm install kyverno kyverno/kyverno -n kyverno-system
+#   - cosign public key (cosign.pub) — the PRIVATE key stays in Jenkins only
+#
+# Generate keypair (one-time):
+#   cosign generate-key-pair
+#   → cosign.key (PRIVATE — store in Jenkins credentials, never commit)
+#   → cosign.pub (PUBLIC — safe to commit, used in this policy)
+# =============================================================================
+
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+  annotations:
+    # Policy applies to all namespaces (except kyverno-system and kube-system)
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/description: >-
+      Ensures all container images are signed with Cosign before deployment.
+      Unsigned or tampered images are rejected at admission.
+spec:
+  # enforce = BLOCK unsigned images. audit = log but allow (for testing)
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+            namespaces:
+              - project    # Apply to our app namespace
+      verifyImages:
+      - imageReferences:
+          # Only verify images from our registry (don't block system images)
+          - "siddharthgopalpatel/dcp_devsecops:*"
+        attestors:
+        - count: 1
+          entries:
+          - keys:
+              # =============================================================
+              # PUBLIC KEY — safe to commit
+              # This is the verification key. Anyone can verify, only CI signs.
+              # Replace with your actual cosign.pub content
+              # =============================================================
+              publicKeys: |-
+                -----BEGIN PUBLIC KEY-----
+                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE... (your cosign.pub here)
+                -----END PUBLIC KEY-----
+
+---
+# =============================================================================
+# BONUS: Policy to block images without specific registry prefix
+# =============================================================================
+# Prevents pulling from Docker Hub public (only our private registry allowed)
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict Image Registries
+    policies.kyverno.io/description: >-
+      Only allow images from our trusted registry.
+      Blocks public Docker Hub pulls (supply chain risk).
+spec:
+  validationFailureAction: enforce
+  rules:
+    - name: only-trusted-registry
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+            namespaces:
+              - project
+      validate:
+        message: "Images must be from siddharthgopalpatel/ registry. Public images are blocked."
+        pattern:
+          spec:
+            containers:
+              - image: "siddharthgopalpatel/*"

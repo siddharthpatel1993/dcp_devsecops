@@ -1,24 +1,100 @@
+# =============================================================================
+# KUBERNETES DEPLOYMENT — Production Ready
+# =============================================================================
+# Changes from original:
+#   1. Service: NodePort → ClusterIP (internal only, Ingress handles external)
+#   2. Added Ingress: path-based routing + TLS via cert-manager
+#   3. Image tag: :latest → :GIT_SHA (set by CI/CD pipeline)
+#   4. Added readiness/liveness probes (K8s knows if app is healthy)
+#   5. Added resources requests/limits (prevents noisy neighbor, enables HPA)
+#   6. Added PodDisruptionBudget (safe node maintenance)
+#   7. Replicas: 1 → 3 (HA, zero-downtime deploys)
+#
+# Prerequisites:
+#   - nginx-ingress controller installed: helm install ingress-nginx ingress-nginx/ingress-nginx
+#   - cert-manager installed: helm install cert-manager jetstack/cert-manager --set installCRDs=true
+#   - ClusterIssuer for Let's Encrypt created (see bottom of this file)
+# =============================================================================
+
 ---
+# =============================================================================
+# DEPLOYMENT — The application pods
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    app: mydeploy
-  name: mydeploy
+    app: learneasya-ai
+  name: learneasyai
   namespace: project
 spec:
-  replicas: 1
+  # 3 replicas = survives node failures + enables zero-downtime rolling updates
+  # With 1 replica: any update = full downtime (pod killed before new one is ready)
+  replicas: 3
   selector:
     matchLabels:
-      app: mydeploy
+      app: learneasya-ai
+  strategy:
+    # RollingUpdate: replaces pods one-by-one, old pod serves until new pod is ready
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # create 1 extra pod during update
+      maxUnavailable: 0    # never kill old pod until new one passes readiness
   template:
     metadata:
       labels:
-        app: mydeploy
+        app: learneasya-ai
     spec:
       containers:
-      - image: siddharthgopalpatel/dcp_devsecops:latest
-        name: sidd
+      # Image tag = git SHA from CI/CD pipeline (not :latest)
+      # Why: exact traceability — given a running pod, you know exact code commit
+      - image: siddharthgopalpatel/dcp_devsecops:IMAGE_TAG_PLACEHOLDER
+        name: learneasyai
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+
+        # =====================================================================
+        # PROBES — How K8s knows if your app is healthy
+        # Without probes: K8s sends traffic to broken pods, never restarts stuck ones
+        # =====================================================================
+
+        # Readiness: "Can this pod serve traffic?"
+        # Fails → removed from Service endpoints (no traffic sent)
+        # Use case: app is starting, waiting for DB, or temporarily overloaded
+        readinessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 10    # wait 10s after container starts
+          periodSeconds: 5           # check every 5s
+          failureThreshold: 3        # 3 failures = mark unready
+
+        # Liveness: "Is this pod alive or deadlocked?"
+        # Fails → K8s RESTARTS the container
+        # Use case: app is hung, memory leak caused freeze, deadlock
+        livenessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 30    # give app time to fully start
+          periodSeconds: 10          # check every 10s
+          failureThreshold: 3        # 3 failures = restart
+
+        # =====================================================================
+        # RESOURCES — Prevent noisy neighbor + enable autoscaling
+        # Without: one pod can eat all node CPU/memory, starving others
+        # =====================================================================
+        resources:
+          requests:
+            # Guaranteed minimum — scheduler uses this to place pods
+            cpu: 100m          # 0.1 CPU core
+            memory: 256Mi      # 256MB RAM
+          limits:
+            # Maximum allowed — pod throttled (CPU) or killed (memory) above this
+            cpu: 500m          # 0.5 CPU core max
+            memory: 512Mi      # 512MB RAM max (OOMKilled if exceeds)
+
         volumeMounts:
           - name: data
             mountPath: /var/log/gunicorn
@@ -26,28 +102,124 @@ spec:
           - name: OPENAI_API_KEY
             valueFrom:
               secretKeyRef:
-                name: db-secret  ## Name of the secret created
-                key: siddnidhi  ## The key to fetch
+                name: db-secret
+                key: siddnidhi
       volumes:
       - name: data
         persistentVolumeClaim:
            claimName: data
----
 
+---
+# =============================================================================
+# SERVICE — Internal-only (ClusterIP), Ingress handles external traffic
+# =============================================================================
+# Why ClusterIP instead of NodePort?
+#   - NodePort exposes on every node IP:30000 — no TLS, ugly URL, exposes infra
+#   - ClusterIP is internal-only — only Ingress can reach it
+#   - Ingress provides: HTTPS, domain name, path routing, one LB for all services
+# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:
   labels:
-    app: myservice
-  name: myservice
+    app: learneasya-ai
+  name: learneasyai-service
   namespace: project
 spec:
   ports:
-  - name: "8000"
+  - name: http
     port: 8000
     protocol: TCP
     targetPort: 8000
-    nodePort: 30000
   selector:
-    app: mydeploy
-  type: NodePort
+    app: learneasya-ai
+  # ClusterIP = internal only. No external access without Ingress.
+  type: ClusterIP
+
+---
+# =============================================================================
+# INGRESS — Single entry point for external traffic
+# =============================================================================
+# What this does:
+#   Internet → Cloud LB (auto-created) → Nginx Ingress Controller → this rule → Service → Pods
+#
+# Benefits over NodePort:
+#   - HTTPS with auto-renewed Let's Encrypt certificate
+#   - Domain name (app.example.com instead of 54.23.11.5:30000)
+#   - Path routing (add /api, /docs later — same LB, same IP)
+#   - One LB for ALL services (cost-effective)
+#   - Node IPs hidden from users
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: learneasyai-ingress
+  namespace: project
+  annotations:
+    # Tell cert-manager which issuer to use for TLS certificate
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Nginx-specific: increase body size for file uploads
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  # TLS = HTTPS. cert-manager auto-provisions Let's Encrypt certificate
+  # Auto-renews before expiry — zero manual intervention
+  tls:
+  - hosts:
+    - app.example.com       # Replace with your actual domain
+    secretName: learneasyai-tls   # cert-manager stores cert here
+  rules:
+  - host: app.example.com   # Replace with your actual domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: learneasyai-service
+            port:
+              number: 8000
+
+---
+# =============================================================================
+# POD DISRUPTION BUDGET — Safe node maintenance
+# =============================================================================
+# Without PDB: kubectl drain removes ALL pods at once → full downtime
+# With PDB: K8s guarantees at least 2 pods running during node maintenance
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: learneasyai-pdb
+  namespace: project
+spec:
+  # At least 2 pods must be running at all times
+  # Even during: node drain, cluster upgrade, voluntary disruptions
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: learneasya-ai
+
+---
+# =============================================================================
+# CLUSTER ISSUER — Let's Encrypt certificate automation
+# =============================================================================
+# This tells cert-manager HOW to get TLS certificates
+# Once created, any Ingress with annotation cert-manager.io/cluster-issuer
+# automatically gets a free HTTPS certificate
+# =============================================================================
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    # Let's Encrypt production endpoint
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: siddharthgopal825@gmail.com    # Replace with your email
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
