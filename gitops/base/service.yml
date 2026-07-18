@@ -1,0 +1,18 @@
+# =============================================================================
+# BASE SERVICE — ClusterIP (internal only, Ingress handles external traffic)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: learneasya-ai
+  name: learneasyai-service
+spec:
+  ports:
+  - name: http
+    port: 8000
+    protocol: TCP
+    targetPort: 8000
+  selector:
+    app: learneasya-ai
+  type: ClusterIP

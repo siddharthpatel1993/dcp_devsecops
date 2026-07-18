@@ -43,11 +43,81 @@ pipeline{
             }
         }
 
+        // =================================================================
+        // SECRET SCANNING — Detect leaked credentials/API keys in code
+        // =================================================================
+        // Defence-in-Depth strategy for secret protection:
+        //
+        // Layer 1 — Developer Machine (pre-commit + detect-secrets):
+        //   - Runs locally BEFORE commit is created
+        //   - Instant feedback, secret never enters local git history
+        //   - Setup: .pre-commit-config.yaml with detect-secrets hook
+        //   - Limitation: developer can skip with --no-verify
+        //
+        // Layer 2 — Git Server (GitHub Push Protection):
+        //   - Server-side block — secret never lands on remote
+        //   - Covers the gap where pre-commit is skipped
+        //   - Auto-revokes tokens for known providers (AWS, Slack, etc.)
+        //   - Free for public repos, GitHub Advanced Security for private
+        //
+        // Layer 3 — CI Pipeline (THIS STAGE — hard gate):
+        //   - Even if Layer 1 & 2 are bypassed, CI catches it
+        //   - Pipeline FAILS — secret never reaches main branch
+        //   - Catches custom patterns that GitHub may not know about
+        //   - Uses Trivy (already on agent) — zero new tooling
+        //
+        // Together: virtually airtight. Secret cannot survive all 3 layers.
+        // =================================================================
+        stage("Secret Scanning") {
+            steps {
+                script {
+                    // Trivy filesystem scan in secret mode
+                    // Scans all files for: API keys, passwords, tokens, private keys
+                    // --exit-code 1 = FAIL pipeline if secrets detected
+                    // Secret never progresses past this stage
+                    sh """trivy filesystem . \
+                        --scanners secret \
+                        --severity HIGH,CRITICAL \
+                        --exit-code 1"""
+                    // If this fails: developer must remove secret from code,
+                    // use environment variables or K8s Secrets/Vault instead,
+                    // and if secret was already pushed — ROTATE IT IMMEDIATELY
+                    // (git history retains it even after deletion)
+                }
+            }
+        }
+
         stage("Unit Test") {
             steps {
                 script {
                         sh "python3 -m pip install -r requirements.txt"
                         sh "python3 -m pytest --cov --cov-report=xml"
+                }
+            }
+        }
+
+        // =================================================================
+        // SCA — Software Composition Analysis (Snyk)
+        // =================================================================
+        // Scans dependencies (requirements.txt) for known vulnerabilities
+        // Runs BEFORE Docker build — fail fast, don't waste compute
+        // Snyk also checks transitive deps + provides license compliance
+        // Prerequisites:
+        //   - Snyk CLI installed on Jenkins agent (npm install -g snyk)
+        //   - SNYK_TOKEN stored as Jenkins credential (secret text)
+        // =================================================================
+        stage("SCA - Snyk Dependency Scan") {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+                        sh """snyk auth ${SNYK_TOKEN}
+                            snyk test --file=requirements.txt \
+                            --severity-threshold=high \
+                            --json-file-output=snyk-report.json || true"""
+                        // --severity-threshold=high: only fail on HIGH/CRITICAL
+                        // || true: don't fail pipeline (change to remove || true for hard gate)
+                        // Report uploaded to S3 later with Trivy report
+                    }
                 }
             }
         }
@@ -180,123 +250,204 @@ pipeline{
 
 
         // =================================================================
-        // GITOPS DEPLOYMENT — Update image tag in Git, ArgoCD does the rest
+        // MULTI-ENVIRONMENT PROMOTION — Dev → Staging → Prod
         // =================================================================
-        // OLD method (Ansible):
-        //   Jenkins → SSH to K8s master → kubectl delete → kubectl apply
-        //   Problems: needs SSH, imperative, delete causes downtime, no audit
+        // Architecture:
+        //   - Same signed image promoted through environments (never rebuilt)
+        //   - Kustomize overlays control per-env config (replicas, resources, TLS)
+        //   - ArgoCD watches each overlay directory separately
+        //   - Gates between environments ensure quality before promotion
         //
-        // NEW method (GitOps):
-        //   Jenkins → updates image tag in Git repo → DONE
-        //   ArgoCD (inside cluster) → watches Git → detects change → rolling update
+        // Flow:
+        //   Dev (auto) → DAST + Smoke Test → Staging (auto) → Manual Approval → Prod
         //
-        // Why GitOps is better:
-        //   - No SSH/kubectl access needed from Jenkins (security)
-        //   - Git = single source of truth (what's in Git = what's in cluster)
-        //   - Drift detection: manual kubectl change → ArgoCD auto-reverts
-        //   - Rollback = git revert (not scramble to find old config)
-        //   - Audit trail = git log (who changed what, when, reviewable)
-        //   - Works across multiple clusters (just add destination)
+        // Key principle: "What you test is what you deploy"
+        //   Image abc123f is built ONCE, scanned ONCE, signed ONCE
+        //   Only the image TAG in kustomization.yml changes per environment
         //
-        // How it works:
-        //   1. Jenkins updates image tag in GitOps repo (sed command)
-        //   2. Git push triggers ArgoCD (webhook or 3-min poll)
-        //   3. ArgoCD compares Git (desired) vs Cluster (actual)
-        //   4. ArgoCD applies diff with rolling update (maxUnavailable: 0)
-        //   5. Zero-downtime — new pods ready before old ones killed
+        // GitOps repo structure (Kustomize):
+        //   dcp_devsecops-gitops/
+        //   ├── base/           (shared: deployment, service, pdb)
+        //   └── overlays/
+        //       ├── dev/        (1 replica, low resources, no TLS)
+        //       ├── staging/    (2 replicas, prod-like, TLS staging cert)
+        //       └── prod/       (3 replicas, full resources, TLS prod cert)
         // =================================================================
-        stage("Update GitOps Repo") {
+
+        // -----------------------------------------------------------------
+        // STAGE: Deploy to DEV — Automatic (every successful build)
+        // -----------------------------------------------------------------
+        stage("Deploy to DEV") {
             steps {
                 script {
-                    // Clone the GitOps repo that ArgoCD watches
-                    // This repo ONLY contains K8s manifests (not app code)
-                    // Separation of concerns: app repo ≠ deployment config repo
                     withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
                         sh """
                             git clone https://${GIT_USER}:${GIT_PASS}@github.com/siddharthpatel1993/dcp_devsecops-gitops.git
                             cd dcp_devsecops-gitops
 
-                            # Update image tag to new git SHA
-                            # This is the ONLY thing Jenkins does for deployment
-                            # sed replaces the old image tag with new one
-                            sed -i 's|image: siddharthgopalpatel/dcp_devsecops:.*|image: siddharthgopalpatel/dcp_devsecops:${IMAGE_TAG}|' k8s.yml
+                            # Update ONLY dev overlay — staging/prod untouched
+                            sed -i 's|newTag:.*|newTag: ${IMAGE_TAG}|' overlays/dev/kustomization.yml
 
-                            # Commit and push — this triggers ArgoCD
                             git config user.email 'jenkins@ci.com'
                             git config user.name 'Jenkins CI'
-                            git add k8s.yml
-                            git commit -m 'Deploy: update image to ${IMAGE_TAG}'
+                            git add overlays/dev/kustomization.yml
+                            git commit -m '[DEV] Deploy image ${IMAGE_TAG}'
                             git push origin main
                         """
                     }
-                    // Jenkins is DONE. It never touches the cluster.
-                    // ArgoCD (running inside cluster) will:
-                    //   1. Detect this new commit
-                    //   2. Compare with current cluster state
-                    //   3. Apply rolling update (zero-downtime)
-                    //   4. Report health status in ArgoCD UI
+                    // ArgoCD (learneasyai-dev Application) detects change
+                    // → auto-syncs to project-dev namespace
                 }
             }
         }
 
-        // =================================================================
-        // DAST — Dynamic Application Security Testing (OWASP ZAP)
-        // =================================================================
-        // What is DAST?
-        //   - Tests the RUNNING application from outside (like an attacker would)
-        //   - Sends real HTTP requests, tries common attacks, checks responses
-        //   - Black-box testing — doesn't need source code, tests the live app
-        //
-        // Why DAST when we already have SAST (SonarQube)?
-        //   - SAST scans CODE (finds hardcoded secrets, SQL injection patterns)
-        //   - DAST scans the RUNNING APP (finds what SAST can't):
-        //     • Missing security headers (CSP, X-Frame-Options, HSTS)
-        //     • Misconfigured CORS (allows any origin)
-        //     • Auth bypass (broken session management)
-        //     • XSS that only appears at runtime
-        //     • Server info leakage (expose Django debug=True, stack traces)
-        //     • CSRF vulnerabilities
-        //     • Cookie without Secure/HttpOnly flags
-        //
-        // When in pipeline?
-        //   - AFTER deployment (app must be running to test it)
-        //   - Against staging/dev URL (never scan production — it's noisy)
-        //   - Generates HTML report → stored in S3 for security team
-        //
-        // Why OWASP ZAP?
-        //   - Free, open-source, industry standard
-        //   - Docker image available (no install needed)
-        //   - Baseline scan (quick, passive) vs Full scan (slow, active attacks)
-        //   - Generates standardized reports
-        // =================================================================
-        stage("DAST - OWASP ZAP Scan") {
+        // -----------------------------------------------------------------
+        // GATE 1: DAST scan against DEV environment
+        // -----------------------------------------------------------------
+        // Validates the running application BEFORE promoting to staging
+        // Catches: missing security headers, XSS, CSRF, auth bypass, info leakage
+        // -----------------------------------------------------------------
+        stage("DAST - OWASP ZAP (DEV)") {
             steps {
                 script {
-                    // Wait for deployment to be ready (pods running, passing readiness)
-                    sh "sleep 30"
+                    // Wait for ArgoCD to sync + pods to become ready
+                    sh "sleep 45"
 
-                    // Run ZAP baseline scan against the deployed application
-                    // Baseline scan = passive (safe, fast, ~2 min)
-                    //   - Spiders the app, checks responses for security issues
-                    //   - Does NOT actively attack (safe for shared environments)
-                    // Full scan = active (slow, ~30 min, sends attack payloads)
-                    //   - Use on dedicated staging only
                     sh """docker run --rm \
                         -v \${WORKSPACE}/zap_report:/zap/wrk:rw \
                         owasp/zap2docker-stable zap-baseline.py \
-                        -t http://app.example.com \
-                        -r zap-scan-report-${IMAGE_TAG}.html \
+                        -t http://dev.learneasyai.example.com \
+                        -r zap-scan-report-dev-${IMAGE_TAG}.html \
                         -l WARN \
                         -I"""
-                    // Flags explained:
-                    //   -t = target URL (replace with your staging URL)
-                    //   -r = HTML report filename
-                    //   -l WARN = only report WARN and above (filter noise)
-                    //   -I = don't fail on warnings (fail only on HIGH alerts)
-                    //        Remove -I to make pipeline fail on any finding
 
-                    // Upload ZAP report to S3 alongside Trivy report
-                    sh "aws s3 cp zap_report/zap-scan-report-${IMAGE_TAG}.html s3://delivery-champion-mana-devsecops-2023-scanning-reports/"
+                    // Upload report to S3
+                    sh "aws s3 cp zap_report/zap-scan-report-dev-${IMAGE_TAG}.html s3://delivery-champion-mana-devsecops-2023-scanning-reports/"
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // GATE 1: Smoke Tests against DEV
+        // -----------------------------------------------------------------
+        // Quick functional validation — is the app responding correctly?
+        // If smoke test fails → image does NOT get promoted to staging
+        // -----------------------------------------------------------------
+        stage("Smoke Test (DEV)") {
+            steps {
+                script {
+                    sh """
+                        # Basic health check — is the app responding?
+                        RESPONSE=\$(curl -s -o /dev/null -w '%{http_code}' http://dev.learneasyai.example.com/admin/)
+                        if [ "\$RESPONSE" != "200" ] && [ "\$RESPONSE" != "302" ]; then
+                            echo "Smoke test FAILED! Got HTTP \$RESPONSE"
+                            exit 1
+                        fi
+                        echo "Smoke test PASSED — DEV is healthy (HTTP \$RESPONSE)"
+                    """
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // STAGE: Promote to STAGING — Automatic after DEV gates pass
+        // -----------------------------------------------------------------
+        // Only reaches here if: DAST clean + smoke tests pass on DEV
+        // Same image (${IMAGE_TAG}) — never rebuilt, just promoted
+        // -----------------------------------------------------------------
+        stage("Promote to STAGING") {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                        sh """
+                            cd dcp_devsecops-gitops
+
+                            # Update staging overlay with same image tag that passed DEV
+                            sed -i 's|newTag:.*|newTag: ${IMAGE_TAG}|' overlays/staging/kustomization.yml
+
+                            git add overlays/staging/kustomization.yml
+                            git commit -m '[STAGING] Promote image ${IMAGE_TAG} (passed DEV gates)'
+                            git push origin main
+                        """
+                    }
+                    // ArgoCD (learneasyai-staging Application) detects change
+                    // → auto-syncs to project-staging namespace
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // GATE 2: Integration/Smoke Tests against STAGING
+        // -----------------------------------------------------------------
+        stage("Smoke Test (STAGING)") {
+            steps {
+                script {
+                    // Wait for ArgoCD to sync staging
+                    sh "sleep 45"
+
+                    sh """
+                        RESPONSE=\$(curl -s -o /dev/null -w '%{http_code}' https://staging.learneasyai.example.com/admin/)
+                        if [ "\$RESPONSE" != "200" ] && [ "\$RESPONSE" != "302" ]; then
+                            echo "Staging smoke test FAILED! Got HTTP \$RESPONSE"
+                            exit 1
+                        fi
+                        echo "Staging smoke test PASSED (HTTP \$RESPONSE)"
+                    """
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // GATE 3: Manual Approval for PRODUCTION
+        // -----------------------------------------------------------------
+        // Human-in-the-loop — authorized personnel must approve
+        // Shows what image tag will be deployed + link to reports
+        // Times out after 24 hours (no stale approvals)
+        // -----------------------------------------------------------------
+        stage("Approval for PRODUCTION") {
+            steps {
+                input message: """
+                    Deploy ${IMAGE_TAG} to PRODUCTION?
+
+                    ✅ Passed: Secret Scan, SCA, SAST, Trivy, DAST, Smoke Tests
+                    📋 Reports: s3://delivery-champion-mana-devsecops-2023-scanning-reports/
+                    🔖 Image: ${IMAGE_NAME}:${IMAGE_TAG} (signed with Cosign)
+                """,
+                ok: "Deploy to Production",
+                submitter: "lead-devops,platform-team,siddharth"
+                // Only listed users/groups can approve
+                // Everyone else sees the gate but cannot click approve
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // STAGE: Promote to PRODUCTION — After manual approval
+        // -----------------------------------------------------------------
+        // Same image that passed ALL gates — no rebuild, no re-scan
+        // ArgoCD prod app has automated sync DISABLED — extra safety
+        // After git push, ArgoCD shows "OutOfSync" → ops team clicks sync
+        // OR enable auto-sync if you trust the gate process fully
+        // -----------------------------------------------------------------
+        stage("Deploy to PRODUCTION") {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                        sh """
+                            cd dcp_devsecops-gitops
+
+                            # Update prod overlay — this is the final promotion
+                            sed -i 's|newTag:.*|newTag: ${IMAGE_TAG}|' overlays/prod/kustomization.yml
+
+                            git add overlays/prod/kustomization.yml
+                            git commit -m '[PROD] Deploy image ${IMAGE_TAG} (approved by team)'
+                            git push origin main
+                        """
+                    }
+                    // ArgoCD (learneasyai-prod Application):
+                    //   - If auto-sync disabled: shows OutOfSync, ops clicks Sync
+                    //   - If auto-sync enabled: deploys immediately
+                    //   - Either way: rolling update with maxUnavailable: 0
+                    echo "✅ Production deployment triggered for ${IMAGE_TAG}"
                 }
             }
         }

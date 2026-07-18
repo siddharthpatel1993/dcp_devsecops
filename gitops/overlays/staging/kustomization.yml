@@ -1,0 +1,50 @@
+# =============================================================================
+# STAGING OVERLAY — Pre-production validation environment
+# =============================================================================
+# - 2 replicas (mirrors prod pattern, validates rolling updates)
+# - Production-like resources (catch resource issues before prod)
+# - TLS enabled (validates cert-manager + ingress config)
+# - Promoted AFTER dev smoke tests + DAST pass (automated gate)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: project-staging
+
+resources:
+  - ../../base
+  - ingress.yml
+
+# Image tag — updated by Jenkins after dev gates pass
+images:
+  - name: siddharthgopalpatel/dcp_devsecops
+    newTag: IMAGE_TAG_PLACEHOLDER
+
+# Staging-specific patches
+patches:
+  - target:
+      kind: Deployment
+      name: learneasyai
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+  - target:
+      kind: PodDisruptionBudget
+      name: learneasyai-pdb
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 1
+
+commonLabels:
+  app.kubernetes.io/environment: staging

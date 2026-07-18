@@ -1,0 +1,199 @@
+# =============================================================================
+# GRAFANA DASHBOARD — Canary Deployment Monitoring
+# =============================================================================
+# What is this?
+#   A Grafana dashboard provisioned as a ConfigMap.
+#   kube-prometheus-stack auto-imports dashboards from ConfigMaps
+#   with the label: grafana_dashboard: "1"
+#
+# Dashboard panels:
+#   1. Traffic split (canary vs stable %)
+#   2. Error rate comparison (canary vs stable)
+#   3. Latency P50/P99 comparison
+#   4. Request rate per service
+#   5. Rollout status (current step, phase)
+#   6. Pod restart count
+#
+# Access: Grafana UI → Dashboards → "LearnEasyAI Canary Deployment"
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-canary
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"      # Grafana sidecar picks this up automatically
+    app: grafana
+data:
+  canary-deployment.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "description": "LearnEasyAI Canary Deployment Monitoring - Error rates, latency, traffic split",
+      "editable": true,
+      "title": "LearnEasyAI Canary Deployment",
+      "uid": "learneasyai-canary",
+      "version": 1,
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "refresh": "10s",
+      "panels": [
+        {
+          "title": "Traffic Split - Canary vs Stable",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-canary\",namespace=\"project-prod\"}[1m]))",
+              "legendFormat": "Canary Traffic (req/s)"
+            },
+            {
+              "expr": "sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-service\",namespace=\"project-prod\"}[1m]))",
+              "legendFormat": "Stable Traffic (req/s)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "fillOpacity": 20
+              }
+            }
+          }
+        },
+        {
+          "title": "Error Rate - Canary vs Stable",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-canary\",namespace=\"project-prod\",status=~\"5..\"}[2m])) / sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-canary\",namespace=\"project-prod\"}[2m])) * 100",
+              "legendFormat": "Canary Error %"
+            },
+            {
+              "expr": "sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-service\",namespace=\"project-prod\",status=~\"5..\"}[2m])) / sum(rate(nginx_ingress_controller_requests{service=\"learneasyai-service\",namespace=\"project-prod\"}[2m])) * 100",
+              "legendFormat": "Stable Error %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "thresholds": {
+                "steps": [
+                  { "value": 0, "color": "green" },
+                  { "value": 2, "color": "yellow" },
+                  { "value": 5, "color": "red" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Latency P99 - Canary vs Stable",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{service=\"learneasyai-canary\",namespace=\"project-prod\"}[2m])) by (le))",
+              "legendFormat": "Canary P99"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{service=\"learneasyai-service\",namespace=\"project-prod\"}[2m])) by (le))",
+              "legendFormat": "Stable P99"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {
+                "steps": [
+                  { "value": 0, "color": "green" },
+                  { "value": 0.5, "color": "yellow" },
+                  { "value": 1, "color": "red" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Latency P50 - Canary vs Stable",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{service=\"learneasyai-canary\",namespace=\"project-prod\"}[2m])) by (le))",
+              "legendFormat": "Canary P50"
+            },
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{service=\"learneasyai-service\",namespace=\"project-prod\"}[2m])) by (le))",
+              "legendFormat": "Stable P50"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "s" }
+          }
+        },
+        {
+          "title": "HTTP Status Codes - Canary",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 6, "x": 0, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum(increase(nginx_ingress_controller_requests{service=\"learneasyai-canary\",namespace=\"project-prod\"}[5m])) by (status)",
+              "legendFormat": "{{status}}"
+            }
+          ]
+        },
+        {
+          "title": "HTTP Status Codes - Stable",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 6, "x": 6, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum(increase(nginx_ingress_controller_requests{service=\"learneasyai-service\",namespace=\"project-prod\"}[5m])) by (status)",
+              "legendFormat": "{{status}}"
+            }
+          ]
+        },
+        {
+          "title": "Pod Restarts",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"project-prod\",container=\"learneasyai\"}[30m]))",
+              "legendFormat": "Restarts (30m)"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "value": 0, "color": "green" },
+                  { "value": 1, "color": "yellow" },
+                  { "value": 3, "color": "red" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "Replica Count",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=\"project-prod\",deployment=\"learneasyai\"}",
+              "legendFormat": "Available Replicas"
+            }
+          ]
+        }
+      ],
+      "templating": {
+        "list": []
+      },
+      "schemaVersion": 38
+    }

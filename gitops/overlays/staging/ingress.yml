@@ -1,0 +1,27 @@
+# =============================================================================
+# STAGING INGRESS — TLS-enabled, validates cert-manager before production
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: learneasyai-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - staging.learneasyai.example.com
+    secretName: learneasyai-tls-staging
+  rules:
+  - host: staging.learneasyai.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: learneasyai-service
+            port:
+              number: 8000

@@ -1,0 +1,202 @@
+# =============================================================================
+# ARGO ROLLOUT — Canary Deployment with Auto-Rollback
+# =============================================================================
+# What is this?
+#   Replaces standard K8s Deployment with Argo Rollout resource.
+#   Instead of rolling update (all-or-nothing), traffic is gradually shifted
+#   to new version while monitoring error rates via Prometheus.
+#
+# How Canary works here:
+#   1. New image deployed → only 5% traffic routed to it
+#   2. Prometheus checks: is error rate < 5%? is latency OK?
+#   3. If metrics PASS → promote to 20% → 50% → 80% → 100%
+#   4. If metrics FAIL at ANY step → AUTOMATIC ROLLBACK (zero human intervention)
+#   5. Total rollout time: ~15 minutes (safe) vs instant (risky)
+#
+# Why Canary over Rolling Update?
+#   - Rolling update: replaces pods one-by-one. If new version has a bug,
+#     by the time you notice, 100% traffic is already on broken version.
+#   - Canary: only 5% users see the new version. If it's broken, 95% users
+#     are unaffected. Auto-rollback kicks in within minutes.
+#
+# Prerequisites:
+#   - Argo Rollouts controller installed:
+#       helm install argo-rollouts argo/argo-rollouts -n argo-rollouts --create-namespace
+#   - Prometheus installed (kube-prometheus-stack):
+#       helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
+#   - Nginx Ingress with canary annotations support (default in nginx-ingress)
+#
+# Install Argo Rollouts kubectl plugin (optional, for CLI management):
+#   kubectl argo rollouts dashboard
+#   kubectl argo rollouts get rollout learneasyai -n project-prod --watch
+# =============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: learneasyai
+  namespace: project-prod
+  labels:
+    app: learneasya-ai
+spec:
+  # Same replicas as before — Argo Rollouts manages the rollout strategy
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: learneasya-ai
+
+  template:
+    metadata:
+      labels:
+        app: learneasya-ai
+      annotations:
+        # Prometheus scrape config — expose metrics from app
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: learneasyai
+        image: siddharthgopalpatel/dcp_devsecops:IMAGE_TAG_PLACEHOLDER
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+          name: http
+
+        readinessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+
+        livenessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 3
+
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+
+        volumeMounts:
+          - name: data
+            mountPath: /var/log/gunicorn
+
+        env:
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: app-secret
+                key: openai-api-key
+
+      volumes:
+      - name: data
+        emptyDir: {}
+
+  # ===========================================================================
+  # CANARY STRATEGY — Gradual traffic shift with automated analysis
+  # ===========================================================================
+  strategy:
+    canary:
+      # -----------------------------------------------------------------
+      # Traffic routing via Nginx Ingress canary annotations
+      # Argo Rollouts manages canary/stable Services automatically
+      # -----------------------------------------------------------------
+      canaryService: learneasyai-canary     # New version gets this Service
+      stableService: learneasyai-service    # Current version keeps this Service
+      trafficRouting:
+        nginx:
+          stableIngress: learneasyai-ingress   # Existing production Ingress
+          # Argo Rollouts creates a canary Ingress automatically
+          # with nginx.ingress.kubernetes.io/canary-weight: "X%"
+
+      # -----------------------------------------------------------------
+      # STEPS — Gradual promotion with analysis gates
+      # -----------------------------------------------------------------
+      # Each step either:
+      #   - setWeight: route X% of traffic to canary
+      #   - pause: wait (with or without duration)
+      #   - analysis: run Prometheus queries to validate health
+      #
+      # If analysis FAILS at any step → automatic rollback
+      # If analysis PASSES → proceed to next step
+      # -----------------------------------------------------------------
+      steps:
+        # Step 1: Route 5% traffic to canary
+        - setWeight: 5
+        # Step 2: Wait 1 minute for metrics to stabilize
+        - pause: { duration: 1m }
+        # Step 3: Run analysis — check error rate and latency
+        - analysis:
+            templates:
+              - templateName: canary-success-rate
+            args:
+              - name: canary-service
+                value: learneasyai-canary
+              - name: stable-service
+                value: learneasyai-service
+
+        # Step 4: Passed 5% — promote to 20%
+        - setWeight: 20
+        - pause: { duration: 2m }
+        - analysis:
+            templates:
+              - templateName: canary-success-rate
+            args:
+              - name: canary-service
+                value: learneasyai-canary
+              - name: stable-service
+                value: learneasyai-service
+
+        # Step 5: Passed 20% — promote to 50%
+        - setWeight: 50
+        - pause: { duration: 2m }
+        - analysis:
+            templates:
+              - templateName: canary-success-rate
+            args:
+              - name: canary-service
+                value: learneasyai-canary
+              - name: stable-service
+                value: learneasyai-service
+
+        # Step 6: Passed 50% — promote to 80%
+        - setWeight: 80
+        - pause: { duration: 2m }
+        - analysis:
+            templates:
+              - templateName: canary-success-rate
+            args:
+              - name: canary-service
+                value: learneasyai-canary
+              - name: stable-service
+                value: learneasyai-service
+
+        # Step 7: Full promotion (100%) happens automatically after last step passes
+        # Canary ReplicaSet becomes the new stable
+
+      # -----------------------------------------------------------------
+      # ROLLBACK — What happens when analysis fails
+      # -----------------------------------------------------------------
+      # abortScaleDownDelaySeconds: how long to keep failed canary pods
+      # (useful for debugging — check logs before pods are killed)
+      # -----------------------------------------------------------------
+      abortScaleDownDelaySeconds: 300    # Keep failed canary 5 min for debugging
+
+      # Anti-affinity: spread canary and stable across nodes
+      antiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          weight: 100
+
+  # Revision history for instant rollback to any previous version
+  revisionHistoryLimit: 5

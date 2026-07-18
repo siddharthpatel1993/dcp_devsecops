@@ -1,0 +1,12 @@
+# =============================================================================
+# BASE PDB — PodDisruptionBudget (overridden per environment)
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: learneasyai-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: learneasya-ai

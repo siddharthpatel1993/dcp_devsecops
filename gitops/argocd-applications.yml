@@ -1,0 +1,179 @@
+# =============================================================================
+# ARGOCD APPLICATIONS — One per environment (Dev / Staging / Prod)
+# =============================================================================
+# Each Application watches a different Kustomize overlay directory
+# Same Git repo, different paths → different environments
+#
+# Sync policies differ by environment:
+#   - DEV: auto-sync, auto-prune (fully automated, fast feedback)
+#   - STAGING: auto-sync, auto-prune (automated but with staging validation)
+#   - PROD: manual sync (extra safety — human clicks sync after approval)
+#
+# Apply all three:
+#   kubectl apply -f argocd-applications.yml
+# =============================================================================
+
+---
+# =============================================================================
+# DEV APPLICATION — Auto-sync, self-heal, fast feedback loop
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: learneasyai-dev
+  namespace: argocd
+  labels:
+    environment: dev
+    team: devsecops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devsecops-project
+
+  source:
+    repoURL: https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+    targetRevision: main
+    path: overlays/dev        # Points to dev overlay (1 replica, low resources)
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: project-dev
+
+  syncPolicy:
+    automated:
+      prune: true             # Remove resources deleted from Git
+      selfHeal: true          # Revert manual kubectl changes
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+
+---
+# =============================================================================
+# STAGING APPLICATION — Auto-sync, validates prod-like setup
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: learneasyai-staging
+  namespace: argocd
+  labels:
+    environment: staging
+    team: devsecops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devsecops-project
+
+  source:
+    repoURL: https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+    targetRevision: main
+    path: overlays/staging    # Points to staging overlay (2 replicas, TLS)
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: project-staging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+
+---
+# =============================================================================
+# PROD APPLICATION — MANUAL sync (no auto-sync for production safety)
+# =============================================================================
+# Why manual sync for prod?
+#   - Even though Jenkins has a manual approval gate, we add ArgoCD manual sync
+#     as a SECOND safety net
+#   - After Jenkins pushes to Git, ArgoCD shows "OutOfSync"
+#   - Ops team verifies the diff in ArgoCD UI → clicks "Sync"
+#   - This is defense-in-depth: two separate approval mechanisms
+#   - To go fully automated: uncomment the syncPolicy.automated block
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: learneasyai-prod
+  namespace: argocd
+  labels:
+    environment: production
+    team: devsecops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devsecops-project
+
+  source:
+    repoURL: https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+    targetRevision: main
+    path: overlays/prod       # Points to prod overlay (3 replicas, full resources, TLS)
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: project-prod
+
+  syncPolicy:
+    # =================================================================
+    # MANUAL SYNC — ArgoCD detects change but does NOT auto-deploy
+    # Ops team reviews diff in ArgoCD UI → clicks Sync
+    # Uncomment below to enable auto-sync (if you trust Jenkins gate fully)
+    # =================================================================
+    # automated:
+    #   prune: true
+    #   selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+
+---
+# =============================================================================
+# ARGOCD PROJECT — RBAC scoping for the multi-env setup
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: devsecops-project
+  namespace: argocd
+spec:
+  description: "DevSecOps multi-environment deployments (dev/staging/prod)"
+  sourceRepos:
+    - https://github.com/siddharthpatel1993/dcp_devsecops-gitops.git
+  destinations:
+    - namespace: project-dev
+      server: https://kubernetes.default.svc
+    - namespace: project-staging
+      server: https://kubernetes.default.svc
+    - namespace: project-prod
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  # Optional: restrict what resource types each env can create
+  # namespaceResourceWhitelist:
+  #   - group: 'apps'
+  #     kind: 'Deployment'
+  #   - group: ''
+  #     kind: 'Service'
+  #   - group: 'networking.k8s.io'
+  #     kind: 'Ingress'

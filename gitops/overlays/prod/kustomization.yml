@@ -1,0 +1,49 @@
+# =============================================================================
+# PROD OVERLAY — Production with Canary Deployment (Argo Rollouts)
+# =============================================================================
+# - Argo Rollout replaces standard Deployment (canary strategy)
+# - 3 replicas (HA, survives node failure)
+# - Higher resources (handles real traffic)
+# - TLS with production Let's Encrypt certificate
+# - PDB minAvailable: 2 (safe maintenance)
+# - Canary: 5% → 20% → 50% → 80% → 100% with Prometheus analysis gates
+# - Auto-rollback: if error rate > 5% or latency > 500ms at any step
+# - Promoted ONLY after manual approval from authorized team
+# - ArgoCD sync: MANUAL (no auto-sync for prod — extra safety)
+#
+# Prerequisites:
+#   - Argo Rollouts: helm install argo-rollouts argo/argo-rollouts -n argo-rollouts
+#   - Prometheus: helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
+#   - Grafana comes with kube-prometheus-stack (auto-provisioned dashboards)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: project-prod
+
+resources:
+  # Base resources (Service, PDB) — but NOT base Deployment (Rollout replaces it)
+  - ../../base/service.yml
+  - ../../base/pdb.yml
+  # Prod-specific resources
+  - ingress.yml
+  - rollout.yml              # Argo Rollout (replaces Deployment)
+  - analysis-template.yml    # Prometheus analysis for canary gates
+
+# Image tag — updated by Jenkins ONLY after manual approval gate
+images:
+  - name: siddharthgopalpatel/dcp_devsecops
+    newTag: IMAGE_TAG_PLACEHOLDER
+
+# Production-specific patches
+patches:
+  - target:
+      kind: PodDisruptionBudget
+      name: learneasyai-pdb
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 2
+
+commonLabels:
+  app.kubernetes.io/environment: production

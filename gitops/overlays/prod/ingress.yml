@@ -1,0 +1,30 @@
+# =============================================================================
+# PROD INGRESS — Production TLS with Let's Encrypt production endpoint
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: learneasyai-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # Rate limiting for production
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - learneasyai.example.com
+    secretName: learneasyai-tls-prod
+  rules:
+  - host: learneasyai.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: learneasyai-service
+            port:
+              number: 8000

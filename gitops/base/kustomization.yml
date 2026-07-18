@@ -1,0 +1,16 @@
+# =============================================================================
+# BASE KUSTOMIZATION — Shared resources across all environments
+# =============================================================================
+# Overlays (dev/staging/prod) inherit these and patch environment-specific values
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yml
+  - service.yml
+  - pdb.yml
+
+commonLabels:
+  app.kubernetes.io/name: learneasyai
+  app.kubernetes.io/managed-by: argocd

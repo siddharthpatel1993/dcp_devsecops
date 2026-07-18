@@ -1,5 +1,18 @@
 # =============================================================================
-# KUBERNETES DEPLOYMENT — Production Ready
+# KUBERNETES DEPLOYMENT — Production Ready (REFERENCE / SINGLE-ENV)
+# =============================================================================
+# NOTE: This file is the ORIGINAL single-environment manifest.
+# For multi-environment promotion (Dev → Staging → Prod), see:
+#   gitops/base/           — shared resources (Deployment, Service, PDB)
+#   gitops/overlays/dev/   — dev environment (1 replica, low resources)
+#   gitops/overlays/staging/ — staging (2 replicas, TLS staging cert)
+#   gitops/overlays/prod/  — production (3 replicas, full resources, TLS)
+#   gitops/argocd-applications.yml — ArgoCD apps for each environment
+#
+# This file remains as:
+#   1. Quick reference for understanding the full K8s setup in one place
+#   2. Fallback for single-cluster deployments without Kustomize
+#   3. Base template that the Kustomize structure was derived from
 # =============================================================================
 # Changes from original:
 #   1. Service: NodePort → ClusterIP (internal only, Ingress handles external)

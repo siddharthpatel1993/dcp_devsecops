@@ -1,0 +1,57 @@
+# =============================================================================
+# BASE DEPLOYMENT — Common configuration across all environments
+# =============================================================================
+# Environment-specific values (replicas, resources) are patched via overlays
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: learneasya-ai
+  name: learneasyai
+spec:
+  selector:
+    matchLabels:
+      app: learneasya-ai
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: learneasya-ai
+    spec:
+      containers:
+      - name: learneasyai
+        image: siddharthgopalpatel/dcp_devsecops:IMAGE_TAG_PLACEHOLDER
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /admin/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 3
+        volumeMounts:
+          - name: data
+            mountPath: /var/log/gunicorn
+        env:
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: app-secret
+                key: openai-api-key
+      volumes:
+      - name: data
+        emptyDir: {}

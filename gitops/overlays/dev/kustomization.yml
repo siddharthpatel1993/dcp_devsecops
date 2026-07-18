@@ -1,0 +1,49 @@
+# =============================================================================
+# DEV OVERLAY — Lightweight, auto-deployed on every commit
+# =============================================================================
+# - 1 replica (cost-saving, no HA needed for dev)
+# - Lower resources (shared dev cluster)
+# - No TLS (internal dev domain)
+# - Auto-synced by ArgoCD (no manual approval)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: project-dev
+
+resources:
+  - ../../base
+
+# Image tag — updated by Jenkins pipeline automatically
+images:
+  - name: siddharthgopalpatel/dcp_devsecops
+    newTag: IMAGE_TAG_PLACEHOLDER
+
+# Dev-specific patches
+patches:
+  - target:
+      kind: Deployment
+      name: learneasyai
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  - target:
+      kind: PodDisruptionBudget
+      name: learneasyai-pdb
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+
+commonLabels:
+  app.kubernetes.io/environment: dev

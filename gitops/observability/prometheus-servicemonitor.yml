@@ -1,0 +1,163 @@
+# =============================================================================
+# PROMETHEUS SERVICE MONITOR — Tell Prometheus what to scrape
+# =============================================================================
+# What is this?
+#   ServiceMonitor is a Prometheus Operator CRD that tells Prometheus:
+#   "Scrape metrics from pods behind this Service"
+#
+# Without this: Prometheus doesn't know your app exists
+# With this: Prometheus auto-discovers and scrapes your pods
+#
+# Metrics flow:
+#   App (port 8000) → Prometheus scrapes /metrics → stores time series
+#   → AnalysisTemplate queries Prometheus → pass/fail → canary promote/rollback
+#
+# Note: For Django, you need django-prometheus package to expose /metrics
+#   pip install django-prometheus
+#   Add 'django_prometheus' to INSTALLED_APPS
+#   Add prometheus middleware
+#   This exposes: request count, latency histogram, model operations, etc.
+#
+# Alternative: If app doesn't expose /metrics directly, we rely on
+# nginx_ingress_controller_requests metrics (which we use in AnalysisTemplate)
+# Those are exposed by Nginx Ingress Controller automatically — no app changes
+# =============================================================================
+
+---
+# =============================================================================
+# ServiceMonitor for Nginx Ingress (primary metrics source for canary analysis)
+# =============================================================================
+# This is what the AnalysisTemplate queries rely on.
+# nginx-ingress already exposes metrics — we just ensure Prometheus scrapes them.
+# Usually included with kube-prometheus-stack, but explicit is better.
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-ingress-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus     # Must match Prometheus operator's serviceMonitorSelector
+spec:
+  namespaceSelector:
+    matchNames:
+      - ingress-nginx
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+
+---
+# =============================================================================
+# ServiceMonitor for Application (optional — for custom app metrics)
+# =============================================================================
+# Scrapes the Django app directly if django-prometheus is installed.
+# Provides: django_http_requests_total, django_http_request_duration_seconds, etc.
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: learneasyai-monitor
+  namespace: project-prod
+  labels:
+    release: prometheus
+    app: learneasya-ai
+spec:
+  selector:
+    matchLabels:
+      app: learneasya-ai
+  endpoints:
+    - port: http
+      interval: 15s
+      path: /metrics
+      # If app doesn't expose /metrics yet, Prometheus will get scrape errors
+      # but won't affect the app. Enable once django-prometheus is added.
+
+---
+# =============================================================================
+# PROMETHEUS RULES — Alerting rules for deployment health
+# =============================================================================
+# These fire alerts when the application is degrading
+# Can be used by Grafana for dashboard panels + alert notifications
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: learneasyai-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: learneasyai.deployment
+      rules:
+        # Alert: High error rate (> 5% of requests are 5xx)
+        - alert: HighErrorRate
+          expr: |
+            sum(rate(nginx_ingress_controller_requests{
+              service=~"learneasyai.*",
+              namespace="project-prod",
+              status=~"5.."
+            }[5m])) /
+            sum(rate(nginx_ingress_controller_requests{
+              service=~"learneasyai.*",
+              namespace="project-prod"
+            }[5m])) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            team: devsecops
+          annotations:
+            summary: "High error rate on LearnEasyAI production"
+            description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+            runbook: "Check pod logs, recent deployments, and rollback if needed"
+
+        # Alert: High latency (P99 > 1 second)
+        - alert: HighLatency
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{
+                service=~"learneasyai.*",
+                namespace="project-prod"
+              }[5m])) by (le)
+            ) > 1
+          for: 3m
+          labels:
+            severity: warning
+            team: devsecops
+          annotations:
+            summary: "High P99 latency on LearnEasyAI production"
+            description: "P99 latency is {{ $value }}s (threshold: 1s)"
+
+        # Alert: Pod restarts (possible crash loop)
+        - alert: FrequentPodRestarts
+          expr: |
+            increase(kube_pod_container_status_restarts_total{
+              namespace="project-prod",
+              container="learneasyai"
+            }[15m]) > 3
+          for: 1m
+          labels:
+            severity: warning
+            team: devsecops
+          annotations:
+            summary: "LearnEasyAI pod restarting frequently"
+            description: "{{ $labels.pod }} restarted {{ $value }} times in 15 min"
+
+        # Alert: Canary analysis failed (rollback happened)
+        - alert: CanaryRollbackOccurred
+          expr: |
+            kube_deployment_status_replicas_unavailable{
+              namespace="project-prod",
+              deployment="learneasyai"
+            } > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: devsecops
+          annotations:
+            summary: "Canary rollback detected — new version failed health checks"
+            description: "Check Argo Rollouts dashboard for failure reason"
