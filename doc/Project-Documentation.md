@@ -28,6 +28,9 @@
 | 10 | [Observability Stack](#10-observability-stack) | 25 |
 | 11 | [Design Decisions](#11-design-decisions) | 27 |
 | 12 | [Interview Quick Reference](#12-interview-quick-reference) | 29 |
+| 13 | [CI/CD Pipeline for VMs — Container vs VM Comparison](#13-cicd-pipeline-for-vms--container-vs-vm-comparison) | 31 |
+| 14 | [CI vs Continuous Delivery vs Continuous Deployment](#14-ci-vs-continuous-delivery-vs-continuous-deployment) | 34 |
+| 15 | [Multi-Language Pipeline Strategy](#15-multi-language-pipeline-strategy) | 37 |
 
 ---
 
@@ -1492,6 +1495,531 @@ A: Jenkins never touches the cluster — only updates Git. ArgoCD pulls from Git
 
 **Q: What would you improve next?**  
 A: External Secrets Operator (no manual kubectl secrets), dedicated /health/ endpoint, SBOM generation for compliance, non-root container user, dynamic PR environments.
+
+---
+
+## 13. CI/CD Pipeline for VMs — Container vs VM Comparison
+
+### Why This Section?
+
+Project 1's pipeline is container/K8s-native. But many production environments still deploy to VMs (banking, telecom, legacy apps, regulated environments where containers aren't approved). Here's how the same security-first CI/CD philosophy applies to VM deployments.
+
+### Architecture Comparison
+
+**Container Pipeline (What We Built):**
+```
+Code → Build Docker Image → Scan Image → Sign Image → Push to Registry → 
+GitOps Repo Update → ArgoCD Pulls → K8s Rolling Update → Canary (Argo Rollouts)
+```
+
+**VM Pipeline (Same Security, Different Delivery):**
+```
+Code → Build Artifact (JAR/WAR) → Scan Dependencies → SAST → Upload to Artifactory →
+Bake AMI (Packer) → Scan AMI → Update Launch Template → ASG Instance Refresh → 
+ALB Health Check → Rolling Replacement
+```
+
+### Side-by-Side Pipeline Stages
+
+| Stage | Container/K8s (Project 1) | VM/ASG (Equivalent) |
+|-------|--------------------------|---------------------|
+| **1. Cleanup** | cleanWs() | cleanWs() |
+| **2. Checkout** | Git clone | Git clone |
+| **3. Secret Scan** | Trivy filesystem (secret mode) | Trivy filesystem (secret mode) — identical |
+| **4. Unit Tests** | pytest --cov | mvn test / pytest (same) |
+| **5. SCA** | Snyk (requirements.txt) | Snyk / OWASP Dependency-Check (pom.xml) |
+| **6. SAST** | SonarQube + Quality Gate | SonarQube + Quality Gate — identical |
+| **7. Build** | `docker build` (multi-stage) | `mvn clean package` → JAR/WAR OR `packer build` → AMI |
+| **8. Artifact Scan** | Trivy image scan (before push) | Trivy filesystem on AMI OR Inspector scan |
+| **9. Push Artifact** | Push to DockerHub/ECR | Upload JAR to Nexus/Artifactory OR register AMI |
+| **10. Sign** | Cosign sign (image) | Code signing (JAR) or AMI tagging with SHA |
+| **11. Deploy to Dev** | Update GitOps repo → ArgoCD syncs | Ansible playbook → deploy to dev VMs |
+| **12. DAST** | OWASP ZAP against dev URL | OWASP ZAP against dev URL — identical |
+| **13. Smoke Test** | curl health check | curl health check — identical |
+| **14. Promote Staging** | Update staging overlay in Git | Ansible → deploy to staging fleet |
+| **15. Smoke Test Staging** | curl health check | curl health check — identical |
+| **16. Approval** | Manual approval (Jenkins input) | Manual approval — identical |
+| **17. Deploy Prod** | Update prod overlay → ArgoCD | ASG instance refresh OR Ansible rolling |
+| **18. Verify** | Prometheus canary analysis | ALB health + CloudWatch metrics |
+
+### VM Deployment — Two Strategies
+
+**Strategy A: AMI-Based (Immutable — Recommended)**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Jenkins Pipeline                                         │
+│                                                          │
+│  1. Build JAR (mvn clean package)                        │
+│  2. Packer builds AMI:                                   │
+│     - Base: Amazon Linux 2023                            │
+│     - Install: Java 17, CloudWatch Agent                 │
+│     - Copy: app.jar + systemd unit file                  │
+│     - Harden: disable root SSH, remove unnecessary pkgs  │
+│  3. Trivy scans AMI (filesystem mode)                    │
+│  4. Register AMI with git-SHA tag                        │
+│  5. Update Launch Template → new AMI ID                  │
+│  6. Trigger ASG Instance Refresh:                        │
+│     - min_healthy_percentage: 80%                        │
+│     - One instance at a time replaced                    │
+│     - New instance boots with new AMI                    │
+│     - ALB health check passes → old instance terminated  │
+│  7. Verify: all instances on new AMI                     │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Why immutable (AMI)?**
+- What you tested = what you deploy (no config drift)
+- Rollback = point Launch Template to previous AMI (instant)
+- No SSH needed post-deploy (nothing to configure at runtime)
+- Reproducible — same AMI on 3 instances or 300
+
+**Strategy B: Ansible Push (Mutable — Legacy/Quick)**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Jenkins Pipeline                                         │
+│                                                          │
+│  1. Build JAR (mvn clean package)                        │
+│  2. Upload JAR to Nexus/S3                               │
+│  3. Ansible playbook (serial: 20%, max_fail: 10%):       │
+│     a. Deregister from ALB (wait drain 60s)              │
+│     b. Stop application service                          │
+│     c. Download new JAR from Nexus/S3                    │
+│     d. Start application service                         │
+│     e. Health check (retries: 10, delay: 5s)             │
+│     f. Re-register to ALB (wait healthy)                 │
+│  4. Verify: all instances healthy in target group        │
+└──────────────────────────────────────────────────────────┘
+```
+
+**When to use which?**
+
+| Approach | AMI (Immutable) | Ansible (Mutable) |
+|---|---|---|
+| Best for | Cloud-native, ASG, production | On-prem, quick deploys, config changes |
+| Deploy time | 5-10 min (AMI bake + refresh) | 2-5 min (just copy + restart) |
+| Rollback | Change AMI ID (instant, tested) | Re-run with previous version |
+| Drift risk | Zero (fresh VM every deploy) | Possible (VM state accumulates) |
+| Debugging | Can't SSH (immutable = rebuild) | Can SSH and inspect |
+
+### Security Comparison
+
+| Security Layer | Container Pipeline | VM Pipeline |
+|---|---|---|
+| **Secret scanning** | Trivy filesystem | Trivy filesystem — same |
+| **Dependency scan** | Snyk (requirements.txt) | Snyk / OWASP Dep-Check (pom.xml) |
+| **SAST** | SonarQube | SonarQube — same |
+| **Artifact scan** | Trivy image (CVEs in base image) | Trivy filesystem on AMI / Inspector |
+| **Supply chain** | Cosign (image signature) | Code signing (JAR) + AMI tagging |
+| **Admission control** | Kyverno (reject unsigned images) | AMI validation (only approved AMIs in Launch Template) |
+| **Runtime** | Falco, Network Policies | CrowdStrike/OSSEC, Security Groups |
+| **DAST** | OWASP ZAP | OWASP ZAP — same |
+
+### Rollback Comparison
+
+| Aspect | Container/K8s | VM/ASG |
+|---|---|---|
+| **How** | Git revert → ArgoCD syncs previous image | Update Launch Template → previous AMI → instance refresh |
+| **Time** | ~30 seconds (pods replaced) | ~5 minutes (instances replaced) |
+| **Blast radius** | Namespace-level (one app) | ASG-level (one service) |
+| **Data safety** | Stateless (DB external) | Stateless (DB external) — same |
+| **Automation** | Argo Rollouts auto-rollback on metrics | CloudWatch alarm → Lambda → revert Launch Template |
+
+### Monitoring & Logging (VM vs Container)
+
+| Aspect | Container (K8s) | VM (EC2/ASG) |
+|---|---|---|
+| **Metrics** | Prometheus + ServiceMonitor (auto-discovery) | CloudWatch Agent + custom metrics (install on each VM) |
+| **Logs** | stdout → FluentBit DaemonSet → CloudWatch/Loki | CloudWatch Agent reads log files → CloudWatch Logs |
+| **Dashboards** | Grafana (in-cluster) | CloudWatch Dashboards or Grafana (external) |
+| **Alerting** | AlertManager → PagerDuty/Slack | CloudWatch Alarms → SNS → PagerDuty/Slack |
+| **Tracing** | OpenTelemetry SDK → Tempo/Jaeger | X-Ray SDK → AWS X-Ray |
+| **Health** | Liveness + readiness probes | ALB health check + custom /health endpoint |
+
+### Jenkinsfile Comparison (Key Stages)
+
+**Container — Deploy Stage:**
+```groovy
+stage("Deploy to PROD") {
+    steps {
+        script {
+            // Update image tag in GitOps repo — ArgoCD handles the rest
+            sh """
+                cd dcp_devsecops-gitops
+                sed -i 's|newTag:.*|newTag: ${IMAGE_TAG}|' overlays/prod/kustomization.yml
+                git commit -am '[PROD] Deploy image ${IMAGE_TAG}'
+                git push origin main
+            """
+        }
+    }
+}
+```
+
+**VM — Deploy Stage (AMI approach):**
+```groovy
+stage("Deploy to PROD") {
+    steps {
+        script {
+            // Update Launch Template with new AMI
+            sh """
+                aws ec2 create-launch-template-version \
+                    --launch-template-id ${LT_ID} \
+                    --source-version \$Latest \
+                    --launch-template-data '{"ImageId":"${NEW_AMI_ID}"}'
+
+                aws autoscaling start-instance-refresh \
+                    --auto-scaling-group-name prod-app-asg \
+                    --preferences '{"MinHealthyPercentage":80,"InstanceWarmup":120}'
+            """
+        }
+    }
+}
+```
+
+**VM — Deploy Stage (Ansible approach):**
+```groovy
+stage("Deploy to PROD") {
+    steps {
+        script {
+            sh """
+                ansible-playbook -i inventory/prod deploy.yml \
+                    -e "app_version=${IMAGE_TAG}" \
+                    -e "artifact_url=s3://artifacts/app-${IMAGE_TAG}.jar" \
+                    --forks=5
+            """
+            // Ansible handles: ALB drain → stop → deploy → start → health → re-register
+            // serial: 20% + max_fail_percentage: 10%
+        }
+    }
+}
+```
+
+### Interview Quick Answer
+
+**Q: "Your pipeline is for K8s. How would you deploy to VMs?"**
+
+A: Same security stages (scan, SAST, SCA, DAST) — those are artifact-agnostic. The difference is delivery. Instead of Docker image → ArgoCD → K8s, we'd either:
+1. **Immutable (recommended):** Packer bakes AMI with app → Trivy scans AMI → update Launch Template → ASG instance refresh (80% healthy, rolling). Rollback = revert AMI ID.
+2. **Ansible (legacy/on-prem):** Upload JAR to Nexus → Ansible deploys in 20% batches (ALB drain → deploy → health check → re-register). Rollback = re-run with previous version.
+
+The security pipeline is identical — only the last-mile delivery changes.
+
+---
+
+---
+
+## 14. CI vs Continuous Delivery vs Continuous Deployment
+
+### The Confusion
+
+These three terms sound similar but mean very different things. Many engineers use them interchangeably — interviewers notice.
+
+### Simple Definition
+
+| Term | What It Means | Ends At |
+|------|---------------|---------|
+| **CI (Continuous Integration)** | Every commit is automatically built and tested | ✅ "Code works" — artifact ready |
+| **Continuous Delivery** | Every commit is automatically built, tested, AND ready to deploy — but needs **human approval** to go to prod | ✅ "Code is deployable" — button click away |
+| **Continuous Deployment** | Every commit is automatically built, tested, AND deployed to production — **no human involved** | ✅ "Code is live" — fully automated |
+
+### Visual Comparison
+
+```
+CONTINUOUS INTEGRATION (CI):
+  Code → Build → Unit Test → Integration Test → ✅ Artifact Ready
+                                                   (STOPS HERE)
+                                                   Human decides when to deploy
+
+CONTINUOUS DELIVERY:
+  Code → Build → Test → Scan → Stage Deploy → ✅ Ready for Prod
+                                                   (STOPS HERE)
+                                                   Human clicks "Deploy to Prod"
+
+CONTINUOUS DEPLOYMENT:
+  Code → Build → Test → Scan → Stage → Prod Deploy → ✅ Live
+                                                   (NO STOP)
+                                                   Fully automatic, no human
+```
+
+### Real-World Example: Online Food Ordering App
+
+**Scenario:** Developer fixes a bug in the checkout page.
+
+**With CI only:**
+1. Developer pushes code
+2. Jenkins runs tests — all pass ✅
+3. Docker image built and stored in registry
+4. **DONE.** Operations team manually deploys next Thursday during maintenance window.
+5. Bug fix reaches users: **5 days later**
+
+**With Continuous Delivery:**
+1. Developer pushes code
+2. Jenkins runs tests, scans, builds image ✅
+3. Auto-deployed to staging, smoke tests pass ✅
+4. Slack message: "v2.3.1 ready for production. Approve?"
+5. Tech lead clicks **"Deploy"** → goes to prod
+6. Bug fix reaches users: **2 hours later** (waiting for approval)
+
+**With Continuous Deployment:**
+1. Developer pushes code
+2. Jenkins runs tests, scans, builds image ✅
+3. Auto-deployed to staging, smoke tests pass ✅
+4. Auto-deployed to production (canary 5% → 20% → 100%) ✅
+5. **No human involved.** Prometheus monitors — auto-rollback if errors spike.
+6. Bug fix reaches users: **15 minutes later**
+
+### Which Does Our Project Use?
+
+**Our pipeline = Continuous Delivery (with option for Continuous Deployment)**
+
+```
+Code → Secret Scan → Tests → SAST → Build → Trivy → Sign → Push →
+Deploy Dev (auto) → DAST → Smoke (auto) →
+Deploy Staging (auto) → Smoke (auto) →
+┌─────────────────────────────────┐
+│  MANUAL APPROVAL ← This is     │  ← Continuous DELIVERY
+│  what makes it "Delivery"       │     (human gate before prod)
+│  not "Deployment"               │
+└─────────────────────────────────┘
+Deploy Prod (after approval) → Canary → Auto-rollback if metrics fail
+```
+
+**To convert to Continuous Deployment:** Remove the manual approval stage. Everything auto-promotes if gates pass. Many mature teams do this — but requires high confidence in:
+- Test coverage (>90%)
+- Canary + auto-rollback working perfectly
+- Feature flags (hide incomplete features)
+- Fast rollback (<1 min)
+
+### When to Use Which
+
+| Approach | Best For | Risk Tolerance | Example Companies |
+|---|---|---|---|
+| **CI only** | Regulated/legacy, release committees | Low (monthly releases OK) | Banks (mainframe), government |
+| **Continuous Delivery** | Most companies, enterprise apps | Medium (deploy on demand) | Most startups, SaaS companies |
+| **Continuous Deployment** | Mature DevOps, high test confidence | High (deploy every commit) | Netflix, Amazon, Facebook, Etsy |
+
+### Key Interview Points
+
+1. **CI is NOT deployment** — CI only builds and tests. Stops at "artifact ready."
+2. **Delivery vs Deployment = human approval** — that's the ONLY difference.
+3. **Continuous Deployment requires:** excellent test coverage, feature flags, auto-rollback, monitoring-driven decisions.
+4. **Most companies claim CD but actually do Continuous Delivery** (manual approval before prod).
+5. **Our project supports both** — remove the `input` stage in Jenkinsfile = Continuous Deployment.
+
+### One-Liner for Interview
+
+> "CI means every commit is built and tested. Continuous Delivery means it's also ready to deploy with one click. Continuous Deployment means it actually deploys automatically. The difference between Delivery and Deployment is one `input` stage in the pipeline — a human approval gate."
+
+---
+
+## 15. Multi-Language Pipeline Strategy
+
+### The Problem
+
+Real companies have 50+ microservices in different languages. You can't maintain 50 separate Jenkinsfiles. Need: **shared pipeline template** where language-specific stages are parameterized but security + deploy stages are identical.
+
+### The Pattern: Language Changes the Build, Not the Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SHARED STAGES (language-agnostic — same for ALL services)  │
+│                                                             │
+│  Checkout → Secret Scan → SAST → Quality Gate →            │
+│  Docker Build → Trivy Scan → Sign → Push →                 │
+│  Deploy Dev → DAST → Smoke → Promote → Deploy Prod         │
+└─────────────────────────────────────────────────────────────┘
+                          │
+        ┌─────────────────┼──────────────────┐
+        │                 │                  │
+┌───────▼──────┐  ┌──────▼───────┐  ┌──────▼───────┐
+│   PYTHON     │  │    JAVA      │  │   NODE.JS    │
+│              │  │              │  │              │
+│ pip install  │  │ mvn package  │  │ npm ci       │
+│ pytest --cov │  │ mvn test     │  │ npm test     │
+│ Snyk (pip)   │  │ JaCoCo       │  │ npm audit    │
+│ coverage.xml │  │ OWASP DepChk │  │ jest --cov   │
+└──────────────┘  └──────────────┘  └──────────────┘
+```
+
+### Language-Specific Build Stages
+
+| Stage | Python | Java (Maven) | Node.js | Go |
+|-------|--------|-------------|---------|-----|
+| **Install deps** | `pip install -r requirements.txt` | `mvn dependency:resolve` | `npm ci` | `go mod download` |
+| **Unit tests** | `pytest --cov --cov-report=xml` | `mvn test` | `npm test -- --coverage` | `go test ./... -coverprofile=coverage.out` |
+| **Coverage tool** | pytest-cov | JaCoCo (plugin in pom.xml) | Jest/Istanbul | go tool cover |
+| **SCA scan** | `snyk test --file=requirements.txt` | `mvn org.owasp:dependency-check-maven:check` OR `snyk test --file=pom.xml` | `npm audit --audit-level=high` OR `snyk test` | `snyk test` OR `govulncheck ./...` |
+| **SAST** | SonarQube (sonar-scanner) | SonarQube (`mvn sonar:sonar` — integrated) | SonarQube (sonar-scanner) | SonarQube + golangci-lint |
+| **Build artifact** | app code (no compile needed) | `mvn clean package -DskipTests` → JAR/WAR | `npm run build` → dist/ | `go build -o app` → binary |
+| **Dockerfile base** | python:3.9-slim | eclipse-temurin:17-jre | node:18-alpine | gcr.io/distroless/static |
+| **Image size** | ~150MB | ~200MB | ~100MB | ~20MB (distroless) |
+
+### Shared Library Approach (Jenkins)
+
+```groovy
+// vars/devSecOpsPipeline.groovy — Shared Library
+def call(Map config) {
+    pipeline {
+        agent any
+        stages {
+            stage('Checkout')      { steps { checkout scm } }
+            stage('Secret Scan')   { steps { sh "trivy fs . --scanners secret --exit-code 1" } }
+
+            // === LANGUAGE-SPECIFIC (parameterized) ===
+            stage('Install & Test') {
+                steps {
+                    script {
+                        switch(config.language) {
+                            case 'python':
+                                sh "pip install -r requirements.txt"
+                                sh "pytest --cov --cov-report=xml"
+                                break
+                            case 'java':
+                                sh "mvn clean package"
+                                sh "mvn test"
+                                break
+                            case 'node':
+                                sh "npm ci"
+                                sh "npm test -- --coverage"
+                                break
+                            case 'go':
+                                sh "go test ./... -coverprofile=coverage.out"
+                                sh "go build -o app"
+                                break
+                        }
+                    }
+                }
+            }
+
+            stage('SCA') {
+                steps {
+                    sh "snyk test --file=${config.depFile} --severity-threshold=high || true"
+                }
+            }
+
+            // === SHARED (identical for all languages) ===
+            stage('SAST')          { steps { /* SonarQube scan */ } }
+            stage('Quality Gate')  { steps { waitForQualityGate() } }
+            stage('Docker Build')  { steps { /* docker build */ } }
+            stage('Trivy Scan')    { steps { sh "trivy image ${config.imageName}:${IMAGE_TAG} --exit-code 1" } }
+            stage('Sign & Push')   { steps { /* cosign sign + push */ } }
+            stage('Deploy')        { steps { /* GitOps update or ASG refresh */ } }
+            stage('DAST')          { steps { /* OWASP ZAP */ } }
+        }
+    }
+}
+```
+
+**Each service's Jenkinsfile becomes 5 lines:**
+```groovy
+// Service-specific Jenkinsfile
+@Library('devsecops-pipeline') _
+
+devSecOpsPipeline(
+    language: 'java',
+    depFile: 'pom.xml',
+    imageName: 'siddharthgopalpatel/order-service'
+)
+```
+
+### GitHub Actions Equivalent (Reusable Workflow)
+
+```yaml
+# .github/workflows/build.yml (called by each service)
+name: DevSecOps Pipeline
+on:
+  workflow_call:
+    inputs:
+      language:
+        required: true
+        type: string
+      dep_file:
+        required: true
+        type: string
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # OIDC for AWS
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secret Scan
+        run: trivy fs . --scanners secret --exit-code 1
+
+      # Language-specific build
+      - name: Build & Test (Python)
+        if: inputs.language == 'python'
+        run: |
+          pip install -r requirements.txt
+          pytest --cov --cov-report=xml
+
+      - name: Build & Test (Java)
+        if: inputs.language == 'java'
+        run: |
+          mvn clean package
+          mvn test
+
+      - name: Build & Test (Node)
+        if: inputs.language == 'node'
+        run: |
+          npm ci
+          npm test -- --coverage
+
+      # Shared stages (identical regardless of language)
+      - name: SCA
+        run: snyk test --file=${{ inputs.dep_file }} --severity-threshold=high
+
+      - name: SAST (SonarQube)
+        uses: sonarqube-scan-action@v2
+
+      - name: Docker Build
+        run: docker build -t $IMAGE_NAME:${{ github.sha }} .
+
+      - name: Trivy Scan
+        run: trivy image $IMAGE_NAME:${{ github.sha }} --exit-code 1 --severity HIGH,CRITICAL
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789:role/github-deploy
+
+      - name: Push to ECR
+        run: docker push $IMAGE_NAME:${{ github.sha }}
+
+      - name: Deploy (GitOps)
+        run: |
+          # Update image tag in GitOps repo
+```
+
+**Each service calls it:**
+```yaml
+# order-service/.github/workflows/ci.yml
+name: CI
+on: [push]
+jobs:
+  build:
+    uses: org/pipeline-templates/.github/workflows/build.yml@v2
+    with:
+      language: java
+      dep_file: pom.xml
+```
+
+### Interview Quick Answers
+
+**Q: "How do you handle 50 microservices in different languages?"**
+
+A: Shared pipeline template. Each service has a 5-line Jenkinsfile (or workflow_call) specifying language and dependency file. The template handles everything — build varies by language, but security scans, container build, signing, and deployment are 100% identical. Platform team owns the template, dev teams own their 5-line config.
+
+**Q: "Jenkins or GitHub Actions?"**
+
+A: Both work. Jenkins for: self-hosted, complex enterprise, existing investment. GitHub Actions for: cloud-first, OIDC native, marketplace actions, simpler YAML. I've used both — same pipeline concepts, different syntax. I'd choose based on what the team already uses.
+
+**Q: "How do you handle a new language (e.g., Rust)?"**
+
+A: Add one `case 'rust'` block to the shared template: `cargo build`, `cargo test`, `cargo audit`. Everything else (scan, sign, push, deploy) unchanged. Takes 30 minutes to support a new language.
 
 ---
 

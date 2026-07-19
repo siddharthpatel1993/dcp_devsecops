@@ -25,10 +25,13 @@
 12. Security Design
 13. Auto Scaling Strategy
 14. Terraform Implementation Guide
-15. Monitoring and Observability
-16. Cost Estimation
-17. Key Design Decisions
-18. Interview Talking Points
+15. Continuous Monitoring
+16. Continuous Logging
+17. Terraform IaC Scanning in CI
+18. Cost Estimation
+19. Backup & Disaster Recovery Strategy
+20. Key Design Decisions
+21. Interview Talking Points
 
 ---
 
@@ -596,27 +599,274 @@ resource "aws_rds_cluster" "main" {
 
 ---
 
-## 15. Monitoring and Observability
+## 15. Continuous Monitoring
 
-### CloudWatch Alarms
+### Infrastructure Metrics (CloudWatch Built-in)
+
+| Tier | Metrics | Source |
+|------|---------|--------|
+| ALB | Request count, latency P50/P99, 5xx rate, healthy hosts, rejected connections | ALB auto-publishes |
+| EC2 | CPU utilization, network in/out, status checks | EC2 auto-publishes |
+| EC2 (agent) | Memory usage, disk usage, custom app metrics | CloudWatch Agent required |
+| RDS | CPU, connections, replication lag, free storage, IOPS, read/write latency | RDS auto-publishes |
+
+**Note:** Memory and disk are NOT available by default — you must install CloudWatch Agent on EC2.
+
+### Application Metrics (Custom — via CloudWatch Agent or StatsD)
+
+- Request rate per endpoint (e.g., /api/orders = 500 req/s)
+- Error rate by type (4xx client errors vs 5xx server errors)
+- Response time P50/P95/P99
+- Active database connections from app pool
+- JVM heap usage (for Java apps)
+- Queue depth (if SQS used)
+
+### Alerting Strategy
+
+| Severity | Condition | Action | Response Time |
+|----------|-----------|--------|---------------|
+| P1 (page) | ALB 5xx >5%, healthy hosts <2, RDS failover triggered | PagerDuty → on-call engineer wakes up | 5 min |
+| P2 (urgent) | CPU >80% sustained 10min, RDS connections >80%, latency P99 >2s | Slack #alerts → team reviews | 30 min |
+| P3 (ticket) | Disk >70%, cert expiring <14d, cost anomaly, backup failed | Jira ticket auto-created | Next business day |
+
+**Routing:**
+```
+CloudWatch Alarm → SNS Topic → 
+                      ├── PagerDuty (P1 — pages on-call)
+                      ├── Slack webhook (P2 — team channel)
+                      └── Lambda → Jira API (P3 — creates ticket)
+```
+
+### CloudWatch Alarms (Specific)
 
 | Alarm | Threshold | Action |
 |-------|-----------|--------|
-| ALB 5xx errors | >5% for 5 min | Page on-call (PagerDuty) |
-| ASG CPU | >70% for 3 min | Scale out + alert |
-| RDS CPU | >80% for 5 min | Alert (consider read replica) |
-| RDS free storage | <10GB | Alert (expand) |
-| ALB healthy hosts | <2 | Page on-call |
-| RDS connections | >80% max | Alert |
+| ALB 5xx errors | >5% for 5 min | P1 — page on-call |
+| ALB latency P99 | >2s for 5 min | P2 — Slack alert |
+| ASG CPU | >70% for 3 min | Auto: scale out + P2 alert |
+| ASG healthy instances | <2 | P1 — page on-call |
+| RDS CPU | >80% for 5 min | P2 — consider read replica |
+| RDS free storage | <10GB | P2 — expand storage |
+| RDS connections | >80% max | P2 — connection pool issue |
+| RDS replication lag | >5 seconds | P2 — investigate |
+| NAT Gateway errors | >0 for 5 min | P2 — outbound broken |
 
-### Dashboards
-- ALB: Request count, latency P50/P99, 4xx/5xx rate
-- ASG: Instance count, CPU, memory, health status
-- RDS: Connections, read/write latency, replication lag, IOPS
+### Dashboards (3 dashboards — one per tier)
+
+**Web Tier Dashboard:**
+- Requests/sec, error rate (4xx + 5xx), latency P50/P99
+- WAF blocked requests count, top blocked rules
+- CloudFront cache hit ratio
+
+**App Tier Dashboard:**
+- Instance count (desired vs actual), CPU/memory per instance
+- Health check pass/fail rate, instance refresh status
+- Application response time, active connections
+
+**Data Tier Dashboard:**
+- Connections active vs max, read/write latency
+- Replication lag (primary → replica), IOPS consumed vs provisioned
+- Storage used, backup status, failover events
 
 ---
 
-## 16. Cost Estimation (Monthly — us-east-1)
+## 16. Continuous Logging
+
+### Log Sources
+
+| Source | What's Logged | Destination | Retention |
+|--------|--------------|-------------|-----------|
+| ALB Access Logs | Every request (IP, path, latency, status code) | S3 bucket (partitioned by date) | 90 days |
+| Application Logs | Business logic (errors, requests, DB queries) | CloudWatch Logs | 30 days hot → S3 archive |
+| VPC Flow Logs | All network traffic (accepted/rejected) | CloudWatch Logs | 14 days (forensics) |
+| RDS Slow Query Log | Queries taking >1 second | CloudWatch Logs | 7 days |
+| RDS Error Log | DB engine errors, connection failures | CloudWatch Logs | 7 days |
+| CloudTrail | All AWS API calls (who did what) | S3 bucket (immutable) | 365 days |
+
+### How Logs Flow
+
+```
+EC2 Instance
+  └── CloudWatch Agent (installed via user-data)
+        └── Reads: /var/log/app/application.log (JSON structured)
+        └── Sends to: CloudWatch Log Group: /app/prod/learneasyai
+                          └── Log Stream: per instance-id
+
+ALB
+  └── Access logs enabled → S3: s3://company-logs/alb/prod/YYYY/MM/DD/
+
+VPC
+  └── Flow Logs → CloudWatch Log Group: /vpc/prod/flow-logs
+```
+
+### Structured Logging Format (JSON)
+
+App logs are structured JSON — not plain text. This enables querying:
+```json
+{
+  "timestamp": "2026-07-19T10:30:00Z",
+  "level": "ERROR",
+  "service": "order-service",
+  "method": "POST",
+  "path": "/api/orders",
+  "status": 500,
+  "duration_ms": 1234,
+  "error": "Connection refused to RDS",
+  "trace_id": "abc-123-def",
+  "instance_id": "i-0a1b2c3d"
+}
+```
+
+### Key Log Insights Queries
+
+**Find all 5xx errors in last hour:**
+```
+fields @timestamp, path, status, error
+| filter status >= 500
+| sort @timestamp desc
+| limit 50
+```
+
+**Top 10 slowest endpoints:**
+```
+fields path, duration_ms
+| stats avg(duration_ms) as avg_ms, count() as requests by path
+| sort avg_ms desc
+| limit 10
+```
+
+**Failed DB connections by instance:**
+```
+fields @timestamp, instance_id, error
+| filter error like /Connection refused/
+| stats count() by instance_id
+```
+
+### Metric Filters (Logs → Alarms)
+
+Convert log patterns into CloudWatch metrics:
+- Filter: `{ $.status = 500 }` → Metric: `App5xxCount` → Alarm if >10 in 5 min
+- Filter: `{ $.duration_ms > 3000 }` → Metric: `SlowRequests` → Alarm if >50 in 5 min
+
+This bridges logging and monitoring — log patterns trigger alarms automatically.
+
+---
+
+## 17. Terraform IaC Scanning in CI
+
+### Why Scan Terraform Code?
+
+Common misconfigurations that scanning catches:
+- Security Group open to 0.0.0.0/0 on port 22 (SSH to world)
+- S3 bucket without encryption
+- RDS publicly accessible = true
+- IAM policy with `*` (admin access)
+- No logging enabled on ALB/S3/CloudTrail
+
+**Without scanning:** These reach production. One wrong SG rule = data breach.  
+**With scanning:** Caught at PR time. Developer fixes before code merges.
+
+### Pipeline Flow
+
+```
+Developer creates PR (Terraform code change)
+         │
+         ▼
+┌─────────────────────┐
+│  tfsec scan         │ ← Static analysis of .tf files
+│  (finds SG issues,  │    Fast (<30 sec), no AWS access needed
+│   encryption gaps)  │
+└────────┬────────────┘
+         │ PASS?
+         ▼
+┌─────────────────────┐
+│  Checkov scan       │ ← CIS benchmarks, compliance checks
+│  (200+ built-in     │    Covers AWS/Azure/GCP/K8s
+│   policies)         │
+└────────┬────────────┘
+         │ PASS?
+         ▼
+┌─────────────────────┐
+│  OPA/Conftest       │ ← Custom company policies (Rego language)
+│  (organization      │    "All RDS must be encrypted"
+│   specific rules)   │    "No public subnets without WAF"
+└────────┬────────────┘
+         │ PASS?
+         ▼
+┌─────────────────────┐
+│  terraform plan     │ ← Shows what will change
+│  (output as PR      │    Reviewers see exact diff
+│   comment)          │
+└────────┬────────────┘
+         │ Reviewed + Approved?
+         ▼
+┌─────────────────────┐
+│  terraform apply    │ ← Only on merge to main
+│  (only for prod     │    Dev auto-applies, prod needs approval
+│   needs approval)   │
+└─────────────────────┘
+```
+
+### Tools Used
+
+| Tool | What It Checks | Example Finding |
+|------|---------------|-----------------|
+| tfsec | Security misconfigurations | "aws_security_group allows ingress from 0.0.0.0/0" |
+| Checkov | CIS benchmarks + best practices | "aws_rds_cluster does not have backup enabled" |
+| Conftest (OPA) | Custom organization policies | "DENY: All S3 buckets must have SSE-KMS encryption" |
+| Infracost | Cost estimation per PR | "This change adds $150/month (new NAT Gateway)" |
+
+### Custom OPA Policy Example
+
+```rego
+# policy/deny_public_rds.rego
+package terraform
+
+deny[msg] {
+  resource := input.resource.aws_rds_cluster[name]
+  resource.publicly_accessible == true
+  msg := sprintf("RDS cluster '%s' must not be publicly accessible", [name])
+}
+
+deny[msg] {
+  resource := input.resource.aws_security_group[name]
+  rule := resource.ingress[_]
+  rule.cidr_blocks[_] == "0.0.0.0/0"
+  rule.from_port <= 22
+  rule.to_port >= 22
+  msg := sprintf("Security group '%s' allows SSH from internet", [name])
+}
+```
+
+### Gating Rules
+
+| Severity | Action |
+|----------|--------|
+| CRITICAL (public DB, open SSH) | ❌ Block merge — must fix |
+| HIGH (no encryption, no logging) | ❌ Block merge — must fix |
+| MEDIUM (no tags, suboptimal config) | ⚠️ Warning — reviewer decides |
+| LOW (naming conventions) | ℹ️ Info only — don't block |
+
+### Drift Detection (Post-Apply)
+
+After Terraform manages infrastructure, someone might change things manually (console click):
+
+```
+Scheduled: Every 6 hours
+  → terraform plan (read-only, no apply)
+  → If changes detected = DRIFT
+  → Alert to Slack: "⚠️ Drift detected in prod — SG rule added manually"
+  → Options: revert (terraform apply) or import (update code to match)
+```
+
+**AWS Config (complement):**
+- Rule: `rds-instance-public-access-check` → non-compliant = alert
+- Rule: `s3-bucket-server-side-encryption-enabled` → auto-remediate via SSM
+- Runs continuously (not just on Terraform changes)
+
+---
+
+## 18. Cost Estimation (Monthly — us-east-1)
 
 | Component | Spec | Monthly Cost |
 |-----------|------|--------------|
@@ -633,7 +883,112 @@ resource "aws_rds_cluster" "main" {
 
 ---
 
-## 17. Key Design Decisions
+## 19. Backup & Disaster Recovery Strategy
+
+### Backup Strategy
+
+| Component | Backup Method | Frequency | Retention | Restore Time |
+|---|---|---|---|---|
+| RDS Aurora | Automated snapshots | Continuous (point-in-time) | 7 days | 5-15 min (new instance from snapshot) |
+| RDS Aurora | Manual snapshot before major changes | On-demand | Until deleted | 5-15 min |
+| EBS volumes (app servers) | Not needed — immutable (AMI-based, no state) | N/A | AMI history | Launch new instance (2 min) |
+| S3 (static assets, configs) | Versioning + Cross-Region Replication | Real-time | 30 days versions | Instant (restore version) |
+| Terraform state | S3 versioning on state bucket | Every apply | 90 days | Restore previous version |
+| Application config | Git (version controlled) | Every commit | Forever | Git checkout |
+
+### Disaster Recovery — Single Region Failure
+
+**Architecture:**
+
+```
+PRIMARY REGION (us-east-1)              DR REGION (eu-west-1)
+┌─────────────────────┐                ┌─────────────────────┐
+│  ALB + ASG + App    │                │  ALB + ASG (scaled  │
+│  Aurora Primary     │───replication──▶│  to zero or min)    │
+│  S3 bucket          │───CRR─────────▶│  Aurora Replica     │
+│  Route53 ──────────────failover──────▶│  S3 replica bucket  │
+└─────────────────────┘                └─────────────────────┘
+```
+
+### DR Tiers (Choose Based on Budget)
+
+| Strategy | RTO | RPO | Monthly Cost | How It Works |
+|---|---|---|---|---|
+| **Backup & Restore** | 2-4 hours | 1 hour | ~$50 (S3 snapshots only) | Restore from snapshot in DR region on failure |
+| **Pilot Light** | 15-30 min | ~1 min | ~$150 (DB replica only) | Aurora cross-region replica running, compute launched on failure |
+| **Warm Standby** | 5-10 min | <1 min | ~$400 (scaled-down copy) | Full stack running at min capacity, scale up on failure |
+| **Active-Active** | ~0 (instant) | 0 | ~$760 (full duplicate) | Both regions serve traffic, Aurora Global Database |
+
+### Our Choice: Pilot Light (Best Cost/Recovery Balance)
+
+**Normal operation:**
+- Primary region handles 100% traffic
+- Aurora cross-region read replica in DR region (async, <1s lag)
+- S3 CRR enabled (real-time replication)
+- Terraform code can spin up full stack in DR region in 10 min
+- Route53 health check monitors primary ALB every 10 seconds
+
+**On failure (primary region down):**
+1. Route53 health check fails (3 consecutive = 30 seconds)
+2. DNS failover to DR region ALB (TTL 60s → users switch in ~90s)
+3. Aurora replica promoted to primary (<30 seconds)
+4. ASG in DR region scales from 0 → 3 instances (2-3 minutes)
+5. **Total RTO: ~5 minutes**
+6. **RPO: <1 second** (Aurora replication lag)
+
+**Automated failover (no human needed):**
+```
+Route53 health check fails
+    → Automatic DNS failover (built-in)
+    
+CloudWatch alarm (primary ALB unhealthy)
+    → EventBridge rule
+    → Lambda function:
+        1. Promote Aurora replica
+        2. Update ASG desired capacity (0 → 3)
+        3. Notify team via PagerDuty + Slack
+        4. Log event for audit
+```
+
+### DR Drill (Quarterly — Automated)
+
+```
+Schedule: First Saturday of every quarter, 6 AM
+
+Steps (automated via runbook):
+1. Simulate primary failure (Route53 health check override)
+2. Verify DNS flips to DR
+3. Verify Aurora promotes
+4. Verify ASG scales up
+5. Run smoke tests against DR endpoint
+6. Measure actual RTO (target <5 min)
+7. Failback: restore primary, flip DNS back
+8. Generate DR report → S3 → Slack notification
+
+Result: "DR drill passed. RTO: 4 min 23 sec. RPO: 0.8 sec."
+```
+
+### Key Recovery Scenarios
+
+| Scenario | Recovery Action | Time |
+|---|---|---|
+| Single EC2 instance dies | ASG auto-replaces (health check) | 2-3 min |
+| Entire AZ goes down | ALB routes to other 2 AZs automatically | 0 (instant, already load balanced) |
+| RDS primary fails | Aurora auto-failover to replica (same region) | <30 sec |
+| Entire region fails | Route53 failover → DR region (pilot light) | ~5 min |
+| Accidental data deletion | Aurora point-in-time restore (any second in last 7 days) | 10-15 min |
+| Terraform state corrupted | Restore from S3 versioned backup | 2 min |
+| Bad deployment (app bug) | Revert Launch Template to previous AMI → instance refresh | 5 min |
+
+### Interview Quick Answer
+
+**Q: "What's your DR strategy?"**
+
+A: Pilot light in a secondary region. Aurora cross-region replica for <1s RPO, Route53 health-check failover for automatic DNS switch, Lambda for automated promotion and scaling. Quarterly automated DR drills prove RTO <5 minutes. For single-region failures (AZ down), multi-AZ ALB + Aurora handles it automatically with zero downtime. For data recovery, Aurora point-in-time restore to any second in the last 7 days.
+
+---
+
+## 20. Key Design Decisions
 
 | Decision | Why | Alternative Considered |
 |----------|-----|----------------------|
@@ -648,7 +1003,7 @@ resource "aws_rds_cluster" "main" {
 
 ---
 
-## 18. Interview Talking Points
+## 21. Interview Talking Points
 
 ### 2-Minute Version
 "Deployed a Java Spring Boot application on AWS 3-tier architecture with Terraform. VPC with public/private/data subnets across 3 AZs, ALB with WAF for security, EC2 Auto Scaling Group in private subnets scaling on CPU and request count, and Aurora Multi-AZ for the database in isolated subnets. Everything provisioned via Terraform modules — same code promotes through dev, staging, prod with different tfvars. Handles 5000 req/s, auto-scales 3→20 instances, RDS failover in <30 seconds."
