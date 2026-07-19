@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>3-Tier Application Deployment on AWS with Terraform</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="data:text/css,body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:40px;line-height:1.6;color:#333}h1{color:#1a365d;border-bottom:3px solid #2b6cb0;padding-bottom:10px}h2{color:#2b6cb0;margin-top:40px;border-bottom:1px solid #e2e8f0;padding-bottom:8px}h3{color:#4a5568}table{border-collapse:collapse;width:100%;margin:15px 0}th,td{border:1px solid #e2e8f0;padding:8px 12px;text-align:left}th{background:#f7fafc;font-weight:600}code{background:#f1f5f9;padding:2px 6px;border-radius:3px;font-size:0.9em}pre{background:#1a202c;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto}pre code{background:none;color:#e2e8f0}@media print{body{max-width:100%}pre{white-space:pre-wrap}}" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">3-Tier Application Deployment on AWS with
+Terraform</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#tier-application-deployment-on-aws-with-terraform"
+id="toc-tier-application-deployment-on-aws-with-terraform">3-Tier
+Application Deployment on AWS with Terraform</a>
+<ul>
+<li><a
+href="#project-production-grade-java-application-on-aws-3-tier-architecture"
+id="toc-project-production-grade-java-application-on-aws-3-tier-architecture">Project:
+Production-Grade Java Application on AWS 3-Tier Architecture</a></li>
+<li><a href="#table-of-contents" id="toc-table-of-contents">Table of
+Contents</a></li>
+<li><a href="#what-is-tiered-architecture"
+id="toc-what-is-tiered-architecture">1. What is Tiered
+Architecture?</a></li>
+<li><a href="#tier-architecture-everything-on-one-machine"
+id="toc-tier-architecture-everything-on-one-machine">2. 1-Tier
+Architecture (Everything on One Machine)</a></li>
+<li><a href="#tier-architecture-client-server"
+id="toc-tier-architecture-client-server">3. 2-Tier Architecture
+(Client-Server)</a></li>
+<li><a href="#tier-architecture-production-standard"
+id="toc-tier-architecture-production-standard">4. 3-Tier Architecture
+(Production Standard)</a></li>
+<li><a href="#why-3-tier-for-production"
+id="toc-why-3-tier-for-production">5. Why 3-Tier for
+Production?</a></li>
+<li><a href="#aws-services-mapping-to-tiers"
+id="toc-aws-services-mapping-to-tiers">6. AWS Services Mapping to
+Tiers</a></li>
+<li><a href="#project-architecture-diagram"
+id="toc-project-architecture-diagram">7. Project Architecture
+Diagram</a></li>
+<li><a href="#vpc-and-network-design" id="toc-vpc-and-network-design">8.
+VPC and Network Design</a>
+<ul>
+<li><a href="#what-is-vpc" id="toc-what-is-vpc">What is VPC?</a></li>
+<li><a href="#cidr-planning" id="toc-cidr-planning">CIDR
+Planning</a></li>
+<li><a href="#routing" id="toc-routing">Routing</a></li>
+<li><a href="#nat-gateway" id="toc-nat-gateway">NAT Gateway</a></li>
+</ul></li>
+<li><a href="#web-tier-alb-waf-cloudfront"
+id="toc-web-tier-alb-waf-cloudfront">9. Web Tier (ALB + WAF +
+CloudFront)</a>
+<ul>
+<li><a href="#application-load-balancer-alb"
+id="toc-application-load-balancer-alb">Application Load Balancer
+(ALB)</a></li>
+<li><a href="#aws-waf-web-application-firewall"
+id="toc-aws-waf-web-application-firewall">AWS WAF (Web Application
+Firewall)</a></li>
+<li><a href="#cloudfront-cdn" id="toc-cloudfront-cdn">CloudFront
+(CDN)</a></li>
+</ul></li>
+<li><a href="#application-tier-ec2-auto-scaling-group"
+id="toc-application-tier-ec2-auto-scaling-group">10. Application Tier
+(EC2 Auto Scaling Group)</a>
+<ul>
+<li><a href="#what-is-asg" id="toc-what-is-asg">What is ASG?</a></li>
+<li><a href="#launch-template" id="toc-launch-template">Launch
+Template</a></li>
+<li><a href="#scaling-policies" id="toc-scaling-policies">Scaling
+Policies</a></li>
+<li><a href="#capacity-settings" id="toc-capacity-settings">Capacity
+Settings</a></li>
+<li><a href="#health-checks" id="toc-health-checks">Health
+Checks</a></li>
+<li><a href="#deployment-strategy-zero-downtime"
+id="toc-deployment-strategy-zero-downtime">Deployment Strategy (Zero
+Downtime)</a></li>
+</ul></li>
+<li><a href="#database-tier-rds-aurora-multi-az"
+id="toc-database-tier-rds-aurora-multi-az">11. Database Tier (RDS Aurora
+Multi-AZ)</a>
+<ul>
+<li><a href="#what-is-rds-aurora" id="toc-what-is-rds-aurora">What is
+RDS Aurora?</a></li>
+<li><a href="#why-aurora-over-regular-rds-mysql"
+id="toc-why-aurora-over-regular-rds-mysql">Why Aurora over regular RDS
+MySQL?</a></li>
+<li><a href="#configuration"
+id="toc-configuration">Configuration</a></li>
+<li><a href="#endpoints" id="toc-endpoints">Endpoints</a></li>
+<li><a href="#security" id="toc-security">Security</a></li>
+<li><a href="#failover-what-happens-when-primary-dies"
+id="toc-failover-what-happens-when-primary-dies">Failover (What happens
+when primary dies?)</a></li>
+</ul></li>
+<li><a href="#security-design" id="toc-security-design">12. Security
+Design</a>
+<ul>
+<li><a href="#security-group-chain-micro-segmentation"
+id="toc-security-group-chain-micro-segmentation">Security Group Chain
+(Micro-segmentation)</a></li>
+<li><a href="#iam-roles-no-hardcoded-credentials"
+id="toc-iam-roles-no-hardcoded-credentials">IAM Roles (No hardcoded
+credentials)</a></li>
+<li><a href="#encryption" id="toc-encryption">Encryption</a></li>
+<li><a href="#network-security" id="toc-network-security">Network
+Security</a></li>
+</ul></li>
+<li><a href="#auto-scaling-strategy" id="toc-auto-scaling-strategy">13.
+Auto Scaling Strategy</a>
+<ul>
+<li><a href="#horizontal-vs-vertical-scaling"
+id="toc-horizontal-vs-vertical-scaling">Horizontal vs Vertical
+Scaling</a></li>
+<li><a href="#scaling-based-on-custom-metrics"
+id="toc-scaling-based-on-custom-metrics">Scaling Based on Custom
+Metrics</a></li>
+<li><a href="#scale-in-protection" id="toc-scale-in-protection">Scale-In
+Protection</a></li>
+</ul></li>
+<li><a href="#terraform-implementation-guide"
+id="toc-terraform-implementation-guide">14. Terraform Implementation
+Guide</a>
+<ul>
+<li><a href="#module-structure" id="toc-module-structure">Module
+Structure</a></li>
+<li><a href="#key-terraform-patterns-used"
+id="toc-key-terraform-patterns-used">Key Terraform Patterns
+Used</a></li>
+<li><a href="#environment-differences"
+id="toc-environment-differences">Environment Differences</a></li>
+</ul></li>
+<li><a href="#monitoring-and-observability"
+id="toc-monitoring-and-observability">15. Monitoring and
+Observability</a>
+<ul>
+<li><a href="#cloudwatch-alarms" id="toc-cloudwatch-alarms">CloudWatch
+Alarms</a></li>
+<li><a href="#dashboards" id="toc-dashboards">Dashboards</a></li>
+</ul></li>
+<li><a href="#cost-estimation-monthly-us-east-1"
+id="toc-cost-estimation-monthly-us-east-1">16. Cost Estimation (Monthly
+— us-east-1)</a></li>
+<li><a href="#key-design-decisions" id="toc-key-design-decisions">17.
+Key Design Decisions</a></li>
+<li><a href="#interview-talking-points"
+id="toc-interview-talking-points">18. Interview Talking Points</a>
+<ul>
+<li><a href="#minute-version" id="toc-minute-version">2-Minute
+Version</a></li>
+<li><a href="#common-follow-up-questions"
+id="toc-common-follow-up-questions">Common Follow-Up Questions</a></li>
+</ul></li>
+<li><a href="#summary" id="toc-summary">Summary</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="tier-application-deployment-on-aws-with-terraform">3-Tier
+Application Deployment on AWS with Terraform</h1>
+<h2
+id="project-production-grade-java-application-on-aws-3-tier-architecture">Project:
+Production-Grade Java Application on AWS 3-Tier Architecture</h2>
+<p><strong>Author:</strong> Siddharth Patel<br />
+<strong>Role:</strong> Staff/Principal DevOps &amp; Cloud Engineer (12
+YOE)<br />
+<strong>GitHub:</strong> github.com/siddharthpatel1993<br />
+<strong>Technologies:</strong> Terraform, AWS (VPC, ALB, ASG, RDS, WAF,
+CloudFront), Java/Spring Boot</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li>What is Tiered Architecture?</li>
+<li>1-Tier Architecture (Simple)</li>
+<li>2-Tier Architecture (Client-Server)</li>
+<li>3-Tier Architecture (Production Standard)</li>
+<li>Why 3-Tier for Production?</li>
+<li>AWS Services Mapping to Tiers</li>
+<li>Project Architecture Diagram</li>
+<li>VPC and Network Design</li>
+<li>Web Tier (ALB + WAF + CloudFront)</li>
+<li>Application Tier (EC2 ASG / ECS Fargate)</li>
+<li>Database Tier (RDS Aurora Multi-AZ)</li>
+<li>Security Design</li>
+<li>Auto Scaling Strategy</li>
+<li>Terraform Implementation Guide</li>
+<li>Monitoring and Observability</li>
+<li>Cost Estimation</li>
+<li>Key Design Decisions</li>
+<li>Interview Talking Points</li>
+</ol>
+<hr />
+<h2 id="what-is-tiered-architecture">1. What is Tiered
+Architecture?</h2>
+<p>Tiered architecture means splitting your application into separate
+layers. Each layer has one job. They talk to each other but run
+independently.</p>
+<p><strong>Think of it like a restaurant:</strong> - Customer (user)
+talks to the waiter (web tier) - Waiter takes order to kitchen (app
+tier) - Kitchen gets ingredients from storage (database tier)</p>
+<p>If the kitchen is busy, the waiter still greets new customers. If
+storage is being restocked, the kitchen still prepares existing orders.
+Each tier works independently.</p>
+<p><strong>Why separate tiers?</strong> - Security — database is never
+exposed to internet - Scaling — scale each tier independently based on
+its load - Maintenance — update app code without touching database -
+Failure isolation — database crash doesn’t kill web server</p>
+<hr />
+<h2 id="tier-architecture-everything-on-one-machine">2. 1-Tier
+Architecture (Everything on One Machine)</h2>
+<pre><code>┌─────────────────────────────┐
+│       SINGLE SERVER          │
+│                             │
+│  Web Server (Apache/Nginx)  │
+│  Application (Java/Python)  │
+│  Database (MySQL/Postgres)  │
+│                             │
+│  IP: 54.23.45.67 (public)  │
+└─────────────────────────────┘</code></pre>
+<p><strong>Real Example:</strong> WordPress on a single EC2 instance —
+Apache + PHP + MySQL all on one machine.</p>
+<p><strong>When to use:</strong> Personal blog, dev/test, hobby
+projects.</p>
+<p><strong>Problems:</strong> - One server = single point of failure
+(server dies = everything dies) - Can’t scale (database eating CPU
+affects web server) - Security risk (database exposed to internet) - No
+separation (updating app risks breaking database)</p>
+<hr />
+<h2 id="tier-architecture-client-server">3. 2-Tier Architecture
+(Client-Server)</h2>
+<pre><code>┌──────────────┐         ┌──────────────┐
+│  WEB + APP   │────────▶│   DATABASE   │
+│   SERVER     │         │   SERVER     │
+│              │         │              │
+│ Nginx + Java │         │    MySQL     │
+│ (public)     │         │ (private)    │
+└──────────────┘         └──────────────┘</code></pre>
+<p><strong>Real Example:</strong> Spring Boot app on EC2 connecting to
+RDS MySQL in a private subnet.</p>
+<p><strong>When to use:</strong> Small applications, internal tools,
+&lt;1000 users.</p>
+<p><strong>Improvement over 1-tier:</strong> - Database is separate (can
+scale independently) - Database in private subnet (not exposed to
+internet) - Can upgrade app without touching DB</p>
+<p><strong>Still has problems:</strong> - Web and app combined — can’t
+scale them separately - Single app server = still single point of
+failure - No load balancing - No caching layer</p>
+<hr />
+<h2 id="tier-architecture-production-standard">4. 3-Tier Architecture
+(Production Standard)</h2>
+<pre><code>         INTERNET
+            │
+    ┌───────▼───────┐
+    │   WEB TIER    │  ← Public subnet
+    │  ALB + WAF    │  ← Load balancing + security
+    │  CloudFront   │  ← CDN for static assets
+    └───────┬───────┘
+            │
+    ┌───────▼───────┐
+    │   APP TIER    │  ← Private subnet
+    │  EC2 ASG or   │  ← Auto-scaling group
+    │  ECS Fargate  │  ← Multiple instances
+    └───────┬───────┘
+            │
+    ┌───────▼───────┐
+    │   DATA TIER   │  ← Isolated subnet (no internet)
+    │  RDS Aurora   │  ← Multi-AZ (automatic failover)
+    │  ElastiCache  │  ← Redis for caching
+    └───────────────┘</code></pre>
+<p><strong>Real Example:</strong> Amazon.com, Netflix, any production
+app serving millions of users.</p>
+<p><strong>Each tier explained simply:</strong></p>
+<table>
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 25%" />
+<col style="width: 45%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Job</th>
+<th>Analogy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Web Tier</td>
+<td>Receive user requests, distribute traffic, block attacks</td>
+<td>Hotel reception — greets guests, directs to rooms</td>
+</tr>
+<tr>
+<td>App Tier</td>
+<td>Run business logic, process data, make decisions</td>
+<td>Hotel kitchen — prepares what was ordered</td>
+</tr>
+<tr>
+<td>Data Tier</td>
+<td>Store and retrieve data safely</td>
+<td>Hotel vault — stores valuables securely</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="why-3-tier-for-production">5. Why 3-Tier for Production?</h2>
+<table>
+<colgroup>
+<col style="width: 64%" />
+<col style="width: 35%" />
+</colgroup>
+<thead>
+<tr>
+<th>Benefit</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>High Availability</td>
+<td>ALB spans 3 AZs, RDS Multi-AZ auto-failover</td>
+</tr>
+<tr>
+<td>Scalability</td>
+<td>ASG adds/removes app servers based on load</td>
+</tr>
+<tr>
+<td>Security</td>
+<td>Database has zero internet access, WAF blocks attacks</td>
+</tr>
+<tr>
+<td>Zero-downtime deploys</td>
+<td>Rolling update via ASG — old serves while new starts</td>
+</tr>
+<tr>
+<td>Cost optimization</td>
+<td>Scale app tier during peak, scale down at night</td>
+</tr>
+<tr>
+<td>Fault isolation</td>
+<td>App crash doesn’t kill DB, DB failover doesn’t kill app</td>
+</tr>
+<tr>
+<td>Compliance</td>
+<td>Network tiers satisfy SOC2/PCI requirements</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="aws-services-mapping-to-tiers">6. AWS Services Mapping to
+Tiers</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                        WEB TIER                              │
+│                                                             │
+│  CloudFront (CDN) → ALB (Load Balancer) → WAF (Firewall)  │
+│  ACM (TLS Certs)    Route53 (DNS)                          │
+│  Subnet: PUBLIC (has internet gateway route)                │
+├─────────────────────────────────────────────────────────────┤
+│                        APP TIER                              │
+│                                                             │
+│  EC2 Auto Scaling Group  OR  ECS Fargate Service           │
+│  Launch Template (AMI, user-data)                           │
+│  NAT Gateway (outbound-only internet for patches)           │
+│  Subnet: PRIVATE (no inbound from internet)                 │
+├─────────────────────────────────────────────────────────────┤
+│                        DATA TIER                             │
+│                                                             │
+│  RDS Aurora (Multi-AZ, encrypted, automated backup)         │
+│  ElastiCache Redis (session store, caching)                 │
+│  Subnet: DATA/ISOLATED (no internet at all)                 │
+│  Accessible ONLY from App Tier security group               │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+<hr />
+<h2 id="project-architecture-diagram">7. Project Architecture
+Diagram</h2>
+<pre><code>                         ┌─────────────┐
+                         │  Route 53   │ (DNS: app.example.com)
+                         └──────┬──────┘
+                                │
+                         ┌──────▼──────┐
+                         │ CloudFront  │ (CDN + DDoS protection)
+                         └──────┬──────┘
+                                │
+                    ┌───────────▼───────────┐
+                    │      AWS WAF          │ (SQL injection, XSS, rate limit)
+                    └───────────┬───────────┘
+                                │
+          ┌─────────────────────▼─────────────────────┐
+          │            APPLICATION LOAD BALANCER        │
+          │         (Public Subnet — 3 AZs)            │
+          │   HTTPS:443 → Target Group (port 8080)     │
+          └──────┬──────────────┬──────────────┬──────┘
+                 │              │              │
+        ┌────────▼───┐  ┌──────▼────┐  ┌─────▼──────┐
+        │  EC2 (AZ-a)│  │ EC2 (AZ-b)│  │ EC2 (AZ-c) │
+        │  App Server │  │ App Server│  │ App Server  │
+        │ Private Sub │  │Private Sub│  │ Private Sub │
+        └────────┬───┘  └──────┬────┘  └─────┬──────┘
+                 │              │              │
+          ┌──────▼──────────────▼──────────────▼──────┐
+          │           RDS AURORA CLUSTER                │
+          │     Primary (AZ-a) + Replica (AZ-b)        │
+          │         Data Subnet (Isolated)             │
+          │    Encrypted + Automated Backups            │
+          └────────────────────────────────────────────┘</code></pre>
+<p><strong>Traffic Flow (simple):</strong> 1. User types app.example.com
+→ Route53 resolves to CloudFront 2. CloudFront serves cached static
+files OR forwards to ALB 3. WAF inspects request — blocks if malicious
+4. ALB picks healthiest EC2 instance (round-robin) 5. EC2 processes
+request, queries RDS Aurora 6. Response flows back: EC2 → ALB →
+CloudFront → User</p>
+<hr />
+<h2 id="vpc-and-network-design">8. VPC and Network Design</h2>
+<h3 id="what-is-vpc">What is VPC?</h3>
+<p>Virtual Private Cloud = your own private network inside AWS. Like
+your own office building where you control who enters which floor.</p>
+<h3 id="cidr-planning">CIDR Planning</h3>
+<pre><code>VPC: 10.0.0.0/16 (65,536 IPs — room to grow)
+
+Public Subnets (ALB, NAT Gateway):
+  10.0.1.0/24  (AZ-a) — 256 IPs
+  10.0.2.0/24  (AZ-b) — 256 IPs
+  10.0.3.0/24  (AZ-c) — 256 IPs
+
+Private Subnets (App Servers):
+  10.0.11.0/24 (AZ-a) — 256 IPs
+  10.0.12.0/24 (AZ-b) — 256 IPs
+  10.0.13.0/24 (AZ-c) — 256 IPs
+
+Data Subnets (RDS, ElastiCache):
+  10.0.21.0/24 (AZ-a) — 256 IPs
+  10.0.22.0/24 (AZ-b) — 256 IPs
+  10.0.23.0/24 (AZ-c) — 256 IPs</code></pre>
+<h3 id="routing">Routing</h3>
+<table>
+<colgroup>
+<col style="width: 35%" />
+<col style="width: 51%" />
+<col style="width: 13%" />
+</colgroup>
+<thead>
+<tr>
+<th>Subnet Type</th>
+<th>Route to Internet</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Public</td>
+<td>Yes (Internet Gateway)</td>
+<td>ALB needs to receive traffic from users</td>
+</tr>
+<tr>
+<td>Private</td>
+<td>Outbound only (NAT Gateway)</td>
+<td>App servers need to download patches, not receive direct
+traffic</td>
+</tr>
+<tr>
+<td>Data</td>
+<td>No internet at all</td>
+<td>Database should NEVER talk to internet</td>
+</tr>
+</tbody>
+</table>
+<h3 id="nat-gateway">NAT Gateway</h3>
+<ul>
+<li>One per AZ (for high availability)</li>
+<li>Allows private subnet → internet (outbound only)</li>
+<li>Example: EC2 in private subnet needs to <code>yum update</code> or
+pull Docker images</li>
+<li>If NAT in AZ-a dies, AZ-b and AZ-c still work</li>
+</ul>
+<hr />
+<h2 id="web-tier-alb-waf-cloudfront">9. Web Tier (ALB + WAF +
+CloudFront)</h2>
+<h3 id="application-load-balancer-alb">Application Load Balancer
+(ALB)</h3>
+<p><strong>What it does:</strong> Distributes incoming traffic across
+multiple EC2 instances.</p>
+<p><strong>Simple analogy:</strong> Airport check-in counters. Instead
+of one counter handling all passengers (overloaded), traffic is spread
+across 10 counters evenly.</p>
+<p><strong>Key configurations:</strong> - Listener: HTTPS:443 (TLS
+termination — decrypts SSL here, not on each EC2) - Target Group: EC2
+instances on port 8080 - Health Check: GET /health every 15 seconds —
+unhealthy instance gets no traffic - Cross-zone: Distributes evenly
+across all AZs - Sticky sessions: Disabled (stateless app — sessions in
+Redis)</p>
+<p><strong>Why ALB not NLB?</strong> - ALB = Layer 7 (HTTP). Can route
+by path (/api → app, /static → S3) - NLB = Layer 4 (TCP). For gRPC,
+gaming, extreme performance needs</p>
+<h3 id="aws-waf-web-application-firewall">AWS WAF (Web Application
+Firewall)</h3>
+<p><strong>What it does:</strong> Inspects every HTTP request and blocks
+malicious ones.</p>
+<p><strong>Simple analogy:</strong> Security guard at building entrance
+— checks ID, blocks suspicious people.</p>
+<p><strong>Rules we apply:</strong> - Rate limiting: Max 2000
+requests/5min per IP (blocks DDoS) - SQL injection: Blocks
+<code>'; DROP TABLE users;--</code> type attacks - XSS: Blocks
+<code>&lt;script&gt;alert('hacked')&lt;/script&gt;</code> in inputs -
+Geo-blocking: Block countries where we don’t operate (optional) - IP
+reputation: AWS managed list of known bad IPs</p>
+<h3 id="cloudfront-cdn">CloudFront (CDN)</h3>
+<p><strong>What it does:</strong> Caches static content (images, CSS,
+JS) at edge locations worldwide.</p>
+<p><strong>Simple analogy:</strong> Instead of everyone going to one
+warehouse (slow), copies are kept in local shops near each customer
+(fast).</p>
+<p><strong>Benefits:</strong> - Latency: 20ms from edge vs 200ms from
+origin - Cost: Reduces ALB traffic by 60-70% (cached responses) - DDoS:
+Shield Standard included free — absorbs volumetric attacks - HTTPS: Free
+ACM certificate, enforce HTTPS-only</p>
+<hr />
+<h2 id="application-tier-ec2-auto-scaling-group">10. Application Tier
+(EC2 Auto Scaling Group)</h2>
+<h3 id="what-is-asg">What is ASG?</h3>
+<p>Auto Scaling Group = a set of EC2 instances that automatically grows
+or shrinks based on demand.</p>
+<p><strong>Simple analogy:</strong> A taxi company. During morning rush,
+they deploy 50 taxis. At 2 AM, only 5 taxis are out. They adjust based
+on demand.</p>
+<h3 id="launch-template">Launch Template</h3>
+<p>Defines what each EC2 instance looks like:</p>
+<pre><code>- AMI: Amazon Linux 2023 (pre-baked with Java 17 + app JAR)
+- Instance type: m5.large (2 vCPU, 8GB RAM)
+- Security Group: Allow 8080 from ALB SG only
+- IAM Role: S3 read (for configs), CloudWatch (for metrics)
+- User-data: Start application on boot</code></pre>
+<h3 id="scaling-policies">Scaling Policies</h3>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>Trigger</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Target Tracking</td>
+<td>CPU &gt; 60% average</td>
+<td>Add instances</td>
+</tr>
+<tr>
+<td>Target Tracking</td>
+<td>CPU &lt; 30% average</td>
+<td>Remove instances</td>
+</tr>
+<tr>
+<td>Scheduled</td>
+<td>Every weekday 8:50 AM</td>
+<td>Min = 6 (pre-scale for traffic)</td>
+</tr>
+<tr>
+<td>Scheduled</td>
+<td>Every day 10 PM</td>
+<td>Min = 2 (save cost at night)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capacity-settings">Capacity Settings</h3>
+<pre><code>Minimum: 2 (always running — even at 3 AM)
+Desired: 3 (normal traffic)
+Maximum: 20 (handles 10x spike)</code></pre>
+<h3 id="health-checks">Health Checks</h3>
+<ul>
+<li>EC2 check: Is the instance running? (basic)</li>
+<li>ELB check: Is /health returning 200? (application-level)</li>
+<li>Grace period: 300 seconds (don’t kill instance while app
+starts)</li>
+</ul>
+<h3 id="deployment-strategy-zero-downtime">Deployment Strategy (Zero
+Downtime)</h3>
+<ul>
+<li>Rolling update: Replace 1 instance at a time</li>
+<li>New instance must pass health check before old one is killed</li>
+<li>If new instance fails → rollback (keep old running)</li>
+</ul>
+<hr />
+<h2 id="database-tier-rds-aurora-multi-az">11. Database Tier (RDS Aurora
+Multi-AZ)</h2>
+<h3 id="what-is-rds-aurora">What is RDS Aurora?</h3>
+<p>Managed relational database. AWS handles backups, patching, failover,
+replication. You just use it.</p>
+<p><strong>Simple analogy:</strong> Renting a furnished apartment vs
+building a house. Aurora = you move in and use it. Self-managed DB = you
+build walls, plumbing, electricity yourself.</p>
+<h3 id="why-aurora-over-regular-rds-mysql">Why Aurora over regular RDS
+MySQL?</h3>
+<ul>
+<li>3-5x faster than standard MySQL</li>
+<li>6 copies of data across 3 AZs automatically</li>
+<li>Failover in &lt;30 seconds (vs 60-120s for standard RDS)</li>
+<li>Auto-scaling storage (10GB → 128TB, no manual resize)</li>
+<li>Up to 15 read replicas with &lt;10ms lag</li>
+</ul>
+<h3 id="configuration">Configuration</h3>
+<pre><code>Engine: Aurora MySQL 8.0
+Instance: db.r5.large (2 vCPU, 16GB RAM)
+Multi-AZ: Yes (automatic failover)
+Encryption: Yes (KMS managed key)
+Backup: 7 days retention, automated daily
+Storage: Auto-scales (starts 20GB)</code></pre>
+<h3 id="endpoints">Endpoints</h3>
+<ul>
+<li><strong>Writer endpoint:</strong>
+app-db.cluster-abc123.us-east-1.rds.amazonaws.com (always points to
+primary)</li>
+<li><strong>Reader endpoint:</strong>
+app-db.cluster-ro-abc123.us-east-1.rds.amazonaws.com (load-balanced
+across replicas)</li>
+</ul>
+<p>App uses writer for INSERT/UPDATE, reader for SELECT queries →
+reduces primary load.</p>
+<h3 id="security">Security</h3>
+<ul>
+<li>Data subnet (no internet route at all)</li>
+<li>Security group: Allow port 3306 ONLY from App tier SG</li>
+<li>IAM authentication (no password in code)</li>
+<li>Encrypted at rest (KMS) + encrypted in transit (SSL)</li>
+<li>No public accessibility</li>
+</ul>
+<h3 id="failover-what-happens-when-primary-dies">Failover (What happens
+when primary dies?)</h3>
+<ol type="1">
+<li>Aurora detects primary failure</li>
+<li>Promotes replica to primary (&lt;30 seconds)</li>
+<li>Writer endpoint DNS flips to new primary</li>
+<li>Application reconnects automatically (retry logic)</li>
+<li>No data loss (synchronous replication within cluster)</li>
+</ol>
+<hr />
+<h2 id="security-design">12. Security Design</h2>
+<h3 id="security-group-chain-micro-segmentation">Security Group Chain
+(Micro-segmentation)</h3>
+<pre><code>Internet → ALB-SG (port 443 from 0.0.0.0/0)
+              ↓
+           APP-SG (port 8080 from ALB-SG only)
+              ↓
+           DB-SG  (port 3306 from APP-SG only)</code></pre>
+<p><strong>Key principle:</strong> Each tier only accepts traffic from
+the tier above it. Database NEVER sees internet traffic — even if ALB is
+compromised, attacker must also compromise app server to reach DB.</p>
+<h3 id="iam-roles-no-hardcoded-credentials">IAM Roles (No hardcoded
+credentials)</h3>
+<ul>
+<li>EC2 instances: Instance profile with S3 read + CloudWatch write</li>
+<li>RDS: IAM authentication (app generates temporary token, no
+password)</li>
+<li>CI/CD: OIDC federation (GitHub Actions → assume role, no access
+keys)</li>
+</ul>
+<h3 id="encryption">Encryption</h3>
+<ul>
+<li>At rest: EBS (AES-256), RDS (KMS CMK), S3 (SSE-KMS)</li>
+<li>In transit: TLS 1.2+ everywhere (ALB terminates, app→DB uses
+SSL)</li>
+</ul>
+<h3 id="network-security">Network Security</h3>
+<ul>
+<li>NACLs: Deny known bad IP ranges at subnet level</li>
+<li>VPC Flow Logs: Capture all traffic for forensics</li>
+<li>Private subnets: App servers never directly reachable from
+internet</li>
+<li>VPC Endpoints: S3, Secrets Manager accessed privately (no internet
+path)</li>
+</ul>
+<hr />
+<h2 id="auto-scaling-strategy">13. Auto Scaling Strategy</h2>
+<h3 id="horizontal-vs-vertical-scaling">Horizontal vs Vertical
+Scaling</h3>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 22%" />
+<col style="width: 22%" />
+<col style="width: 33%" />
+<col style="width: 22%" />
+</colgroup>
+<thead>
+<tr>
+<th>Type</th>
+<th>What</th>
+<th>Example</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vertical</td>
+<td>Bigger instance</td>
+<td>m5.large → m5.2xlarge</td>
+<td>Quick fix, has ceiling</td>
+</tr>
+<tr>
+<td>Horizontal</td>
+<td>More instances</td>
+<td>3 instances → 10 instances</td>
+<td>Production standard, no ceiling</td>
+</tr>
+</tbody>
+</table>
+<p>We use <strong>horizontal scaling</strong> (ASG adds more EC2s).</p>
+<h3 id="scaling-based-on-custom-metrics">Scaling Based on Custom
+Metrics</h3>
+<p>Besides CPU, we scale on: - Request count per target (from ALB): If
+&gt;1000 req/instance → add more - Queue depth (if using SQS): If
+&gt;100 messages pending → add consumers</p>
+<h3 id="scale-in-protection">Scale-In Protection</h3>
+<ul>
+<li>Cooldown: 300 seconds after scale-out before allowing scale-in</li>
+<li>Instance warmup: 120 seconds (new instance needs time to be
+ready)</li>
+<li>Scale-in: Remove 1 at a time (conservative) — never remove 50% at
+once</li>
+<li>Protect from scale-in: Long-running jobs protected until
+complete</li>
+</ul>
+<hr />
+<h2 id="terraform-implementation-guide">14. Terraform Implementation
+Guide</h2>
+<h3 id="module-structure">Module Structure</h3>
+<pre><code>terraform/
+├── modules/
+│   ├── vpc/
+│   │   ├── main.tf          (VPC, subnets, IGW, NAT, routes)
+│   │   ├── variables.tf     (CIDR, AZs, tags)
+│   │   └── outputs.tf       (vpc_id, subnet_ids)
+│   ├── alb/
+│   │   ├── main.tf          (ALB, listener, target group, WAF)
+│   │   ├── variables.tf     (vpc_id, subnets, cert_arn)
+│   │   └── outputs.tf       (alb_dns, target_group_arn)
+│   ├── asg/
+│   │   ├── main.tf          (Launch template, ASG, policies)
+│   │   ├── variables.tf     (ami, instance_type, min/max)
+│   │   └── outputs.tf       (asg_name)
+│   ├── rds/
+│   │   ├── main.tf          (Aurora cluster, instances, subnet group)
+│   │   ├── variables.tf     (engine, instance_class, credentials)
+│   │   └── outputs.tf       (writer_endpoint, reader_endpoint)
+│   └── monitoring/
+│       ├── main.tf          (CloudWatch alarms, dashboards, SNS)
+│       ├── variables.tf
+│       └── outputs.tf
+├── environments/
+│   ├── dev/
+│   │   ├── main.tf          (calls modules with dev values)
+│   │   ├── backend.tf       (S3 state: dev account)
+│   │   └── terraform.tfvars (small instances, 1 replica)
+│   ├── staging/
+│   │   ├── main.tf
+│   │   ├── backend.tf       (S3 state: staging account)
+│   │   └── terraform.tfvars (prod-like but smaller)
+│   └── prod/
+│       ├── main.tf
+│       ├── backend.tf       (S3 state: prod account)
+│       └── terraform.tfvars (full size, 3 AZs, Multi-AZ RDS)
+└── README.md</code></pre>
+<h3 id="key-terraform-patterns-used">Key Terraform Patterns Used</h3>
+<p><strong>1. Remote State (team-safe):</strong></p>
+<pre class="hcl"><code>backend &quot;s3&quot; {
+  bucket         = &quot;company-terraform-state&quot;
+  key            = &quot;prod/3-tier/terraform.tfstate&quot;
+  region         = &quot;us-east-1&quot;
+  dynamodb_table = &quot;terraform-locks&quot;
+  encrypt        = true
+}</code></pre>
+<p><strong>2. Module Composition (VPC module):</strong></p>
+<pre class="hcl"><code>module &quot;vpc&quot; {
+  source = &quot;../../modules/vpc&quot;
+
+  cidr_block         = &quot;10.0.0.0/16&quot;
+  availability_zones = [&quot;us-east-1a&quot;, &quot;us-east-1b&quot;, &quot;us-east-1c&quot;]
+  environment        = &quot;prod&quot;
+
+  public_subnets  = [&quot;10.0.1.0/24&quot;, &quot;10.0.2.0/24&quot;, &quot;10.0.3.0/24&quot;]
+  private_subnets = [&quot;10.0.11.0/24&quot;, &quot;10.0.12.0/24&quot;, &quot;10.0.13.0/24&quot;]
+  data_subnets    = [&quot;10.0.21.0/24&quot;, &quot;10.0.22.0/24&quot;, &quot;10.0.23.0/24&quot;]
+}</code></pre>
+<p><strong>3. ASG with Rolling Update:</strong></p>
+<pre class="hcl"><code>resource &quot;aws_autoscaling_group&quot; &quot;app&quot; {
+  min_size         = var.min_size
+  max_size         = var.max_size
+  desired_capacity = var.desired_size
+
+  vpc_zone_identifier = var.private_subnet_ids
+  target_group_arns   = [var.target_group_arn]
+  health_check_type   = &quot;ELB&quot;
+
+  instance_refresh {
+    strategy = &quot;Rolling&quot;
+    preferences {
+      min_healthy_percentage = 80
+    }
+  }
+}</code></pre>
+<p><strong>4. RDS Aurora (encrypted, Multi-AZ):</strong></p>
+<pre class="hcl"><code>resource &quot;aws_rds_cluster&quot; &quot;main&quot; {
+  engine         = &quot;aurora-mysql&quot;
+  engine_version = &quot;8.0.mysql_aurora.3.04.0&quot;
+
+  master_username = &quot;admin&quot;
+  master_password = var.db_password
+
+  db_subnet_group_name   = aws_db_subnet_group.data.name
+  vpc_security_group_ids = [aws_security_group.db.id]
+
+  storage_encrypted = true
+  kms_key_id        = aws_kms_key.rds.arn
+
+  backup_retention_period = 7
+  preferred_backup_window = &quot;03:00-04:00&quot;
+
+  skip_final_snapshot = false
+}</code></pre>
+<h3 id="environment-differences">Environment Differences</h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Dev</th>
+<th>Staging</th>
+<th>Prod</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Instance type</td>
+<td>t3.small</td>
+<td>m5.large</td>
+<td>m5.large</td>
+</tr>
+<tr>
+<td>ASG min/max</td>
+<td>1/2</td>
+<td>2/4</td>
+<td>3/20</td>
+</tr>
+<tr>
+<td>RDS instance</td>
+<td>db.t3.medium</td>
+<td>db.r5.large</td>
+<td>db.r5.large</td>
+</tr>
+<tr>
+<td>Multi-AZ RDS</td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>WAF</td>
+<td>Disabled</td>
+<td>Enabled</td>
+<td>Enabled</td>
+</tr>
+<tr>
+<td>Backup retention</td>
+<td>1 day</td>
+<td>3 days</td>
+<td>7 days</td>
+</tr>
+<tr>
+<td>CloudFront</td>
+<td>No</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="monitoring-and-observability">15. Monitoring and
+Observability</h2>
+<h3 id="cloudwatch-alarms">CloudWatch Alarms</h3>
+<table>
+<thead>
+<tr>
+<th>Alarm</th>
+<th>Threshold</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALB 5xx errors</td>
+<td>&gt;5% for 5 min</td>
+<td>Page on-call (PagerDuty)</td>
+</tr>
+<tr>
+<td>ASG CPU</td>
+<td>&gt;70% for 3 min</td>
+<td>Scale out + alert</td>
+</tr>
+<tr>
+<td>RDS CPU</td>
+<td>&gt;80% for 5 min</td>
+<td>Alert (consider read replica)</td>
+</tr>
+<tr>
+<td>RDS free storage</td>
+<td>&lt;10GB</td>
+<td>Alert (expand)</td>
+</tr>
+<tr>
+<td>ALB healthy hosts</td>
+<td>&lt;2</td>
+<td>Page on-call</td>
+</tr>
+<tr>
+<td>RDS connections</td>
+<td>&gt;80% max</td>
+<td>Alert</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dashboards">Dashboards</h3>
+<ul>
+<li>ALB: Request count, latency P50/P99, 4xx/5xx rate</li>
+<li>ASG: Instance count, CPU, memory, health status</li>
+<li>RDS: Connections, read/write latency, replication lag, IOPS</li>
+</ul>
+<hr />
+<h2 id="cost-estimation-monthly-us-east-1">16. Cost Estimation (Monthly
+— us-east-1)</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Spec</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALB</td>
+<td>Standard, 100GB processed</td>
+<td>~$25</td>
+</tr>
+<tr>
+<td>EC2 (3x m5.large on-demand)</td>
+<td>3 instances 24/7</td>
+<td>~$210</td>
+</tr>
+<tr>
+<td>NAT Gateway (3x)</td>
+<td>Per AZ + data</td>
+<td>~$100</td>
+</tr>
+<tr>
+<td>RDS Aurora (Multi-AZ)</td>
+<td>db.r5.large + replica</td>
+<td>~$400</td>
+</tr>
+<tr>
+<td>CloudFront</td>
+<td>100GB transfer</td>
+<td>~$10</td>
+</tr>
+<tr>
+<td>WAF</td>
+<td>Basic rules</td>
+<td>~$10</td>
+</tr>
+<tr>
+<td>S3 (state, logs)</td>
+<td>Minimal</td>
+<td>~$5</td>
+</tr>
+<tr>
+<td><strong>TOTAL</strong></td>
+<td></td>
+<td><strong>~$760/month</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>With Savings Plans (1-year):</strong> ~$500/month (35%
+savings on EC2 + RDS)</p>
+<hr />
+<h2 id="key-design-decisions">17. Key Design Decisions</h2>
+<table>
+<colgroup>
+<col style="width: 27%" />
+<col style="width: 13%" />
+<col style="width: 59%" />
+</colgroup>
+<thead>
+<tr>
+<th>Decision</th>
+<th>Why</th>
+<th>Alternative Considered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3 AZs (not 2)</td>
+<td>Survives full AZ failure with capacity to spare</td>
+<td>2 AZs = lose 50% capacity on failure</td>
+</tr>
+<tr>
+<td>ALB (not NLB)</td>
+<td>Need L7 routing, WAF, path-based rules</td>
+<td>NLB for TCP/gRPC only</td>
+</tr>
+<tr>
+<td>NAT per AZ</td>
+<td>One NAT dies, other AZs unaffected</td>
+<td>Single NAT = SPOF</td>
+</tr>
+<tr>
+<td>Aurora (not RDS MySQL)</td>
+<td>Faster failover, auto-storage, more replicas</td>
+<td>Standard RDS for cost-sensitive</td>
+</tr>
+<tr>
+<td>ASG (not ECS)</td>
+<td>Team familiar with EC2, simpler debugging</td>
+<td>ECS Fargate for container-native</td>
+</tr>
+<tr>
+<td>Terraform modules</td>
+<td>Reusable across environments, DRY</td>
+<td>Flat files = duplication</td>
+</tr>
+<tr>
+<td>Separate state per env</td>
+<td>Blast radius — dev mistake can’t corrupt prod state</td>
+<td>Single state = dangerous</td>
+</tr>
+<tr>
+<td>Instance refresh</td>
+<td>Zero-downtime AMI updates via ASG native feature</td>
+<td>Manual drain + replace</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="interview-talking-points">18. Interview Talking Points</h2>
+<h3 id="minute-version">2-Minute Version</h3>
+<p>“Deployed a Java Spring Boot application on AWS 3-tier architecture
+with Terraform. VPC with public/private/data subnets across 3 AZs, ALB
+with WAF for security, EC2 Auto Scaling Group in private subnets scaling
+on CPU and request count, and Aurora Multi-AZ for the database in
+isolated subnets. Everything provisioned via Terraform modules — same
+code promotes through dev, staging, prod with different tfvars. Handles
+5000 req/s, auto-scales 3→20 instances, RDS failover in &lt;30
+seconds.”</p>
+<h3 id="common-follow-up-questions">Common Follow-Up Questions</h3>
+<p><strong>Q: Why not ECS/EKS instead of EC2 ASG?</strong> A: Team was
+already familiar with EC2 and AMI-based deployments. ASG with instance
+refresh gives us rolling deploys. For new projects I’d use ECS Fargate —
+less ops overhead, better resource efficiency.</p>
+<p><strong>Q: How do you handle database schema changes?</strong> A:
+Flyway migrations in CI/CD. Expand-and-contract pattern — add new column
+first (backward compatible), deploy new code, then drop old column
+later. Never breaking changes.</p>
+<p><strong>Q: What if traffic spikes 10x suddenly?</strong> A: ASG
+target tracking reacts in ~2 minutes. For known events (sales,
+launches), we use scheduled scaling to pre-warm 30 minutes before. ALB
+handles connection queueing during scale-out.</p>
+<p><strong>Q: How do you do zero-downtime deploys?</strong> A: New AMI →
+update launch template → trigger instance refresh → ASG replaces
+instances one by one, keeping 80% healthy at all times. New instance
+must pass ALB health check before old one is terminated.</p>
+<p><strong>Q: How do you handle secrets (DB password)?</strong> A:
+Stored in AWS Secrets Manager. EC2 reads at boot via IAM role (no
+password in code, no environment variables baked in AMI). RDS also
+supports IAM authentication for zero-password approach.</p>
+<hr />
+<h2 id="summary">Summary</h2>
+<p>This project demonstrates understanding of: - Network architecture
+(VPC, subnets, routing, NAT) - Compute scaling (ASG, health checks,
+rolling updates) - Database HA (Aurora Multi-AZ, failover, read
+replicas) - Security layers (WAF, SG chaining, encryption, IAM) -
+Infrastructure as Code (Terraform modules, state, environments) - Cost
+awareness (right-sizing, savings plans, NAT optimization) - Production
+readiness (monitoring, alerting, backups, DR)</p>
+<p>This is the foundational project every DevOps/Cloud engineer at 12
+YOE must be able to explain end-to-end with confidence.</p>
+</body>
+</html>
