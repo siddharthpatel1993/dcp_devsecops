@@ -273,6 +273,251 @@ Data Subnets (RDS, ElastiCache):
 - Example: EC2 in private subnet needs to `yum update` or pull Docker images
 - If NAT in AZ-a dies, AZ-b and AZ-c still work
 
+### Detailed VPC Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    VPC: 10.0.0.0/16                                          │
+│                                                                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────────────────┐ │
+│  │                              INTERNET GATEWAY (IGW)                                     │ │
+│  └───────────────────────────────────┬────────────────────────────────────────────────────┘ │
+│                                      │                                                      │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                               PUBLIC SUBNETS (Web Tier)                                      │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                                                                                             │
+│  ┌─────────────────────────┐ ┌─────────────────────────┐ ┌─────────────────────────┐      │
+│  │  PUBLIC SUBNET (AZ-a)   │ │  PUBLIC SUBNET (AZ-b)   │ │  PUBLIC SUBNET (AZ-c)   │      │
+│  │  10.0.1.0/24            │ │  10.0.2.0/24            │ │  10.0.3.0/24            │      │
+│  │                         │ │                         │ │                         │      │
+│  │  ┌───────────────────┐  │ │  ┌───────────────────┐  │ │  ┌───────────────────┐  │      │
+│  │  │    ALB Node       │  │ │  │    ALB Node       │  │ │  │    ALB Node       │  │      │
+│  │  │  (ENI in subnet)  │  │ │  │  (ENI in subnet)  │  │ │  │  (ENI in subnet)  │  │      │
+│  │  └───────────────────┘  │ │  └───────────────────┘  │ │  └───────────────────┘  │      │
+│  │  ┌───────────────────┐  │ │  ┌───────────────────┐  │ │  ┌───────────────────┐  │      │
+│  │  │  NAT Gateway      │  │ │  │  NAT Gateway      │  │ │  │  NAT Gateway      │  │      │
+│  │  │  (Elastic IP)     │  │ │  │  (Elastic IP)     │  │ │  │  (Elastic IP)     │  │      │
+│  │  └───────────────────┘  │ │  └───────────────────┘  │ │  └───────────────────┘  │      │
+│  │                         │ │                         │ │                         │      │
+│  │  Route Table:           │ │  Route Table:           │ │  Route Table:           │      │
+│  │  0.0.0.0/0 → IGW       │ │  0.0.0.0/0 → IGW       │ │  0.0.0.0/0 → IGW       │      │
+│  │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │      │
+│  │                         │ │                         │ │                         │      │
+│  │  NACL: Allow 443 in    │ │  NACL: Allow 443 in    │ │  NACL: Allow 443 in    │      │
+│  │        Allow ephemeral  │ │        Allow ephemeral  │ │        Allow ephemeral  │      │
+│  │        Deny all other   │ │        Deny all other   │ │        Deny all other   │      │
+│  └─────────────┬───────────┘ └─────────────┬───────────┘ └─────────────┬───────────┘      │
+│                │                            │                            │                   │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                              PRIVATE SUBNETS (App Tier)                                      │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                                                                                             │
+│  ┌─────────────────────────┐ ┌─────────────────────────┐ ┌─────────────────────────┐      │
+│  │ PRIVATE SUBNET (AZ-a)   │ │ PRIVATE SUBNET (AZ-b)   │ │ PRIVATE SUBNET (AZ-c)   │      │
+│  │ 10.0.11.0/24            │ │ 10.0.12.0/24            │ │ 10.0.13.0/24            │      │
+│  │                         │ │                         │ │                         │      │
+│  │  ┌─────────────────┐   │ │  ┌─────────────────┐   │ │  ┌─────────────────┐   │      │
+│  │  │   EC2 Instance  │   │ │  │   EC2 Instance  │   │ │  │   EC2 Instance  │   │      │
+│  │  │   (App Server)  │   │ │  │   (App Server)  │   │ │  │   (App Server)  │   │      │
+│  │  │   SG: APP-SG    │   │ │  │   SG: APP-SG    │   │ │  │   SG: APP-SG    │   │      │
+│  │  │   Port 8080     │   │ │  │   Port 8080     │   │ │  │   Port 8080     │   │      │
+│  │  └─────────────────┘   │ │  └─────────────────┘   │ │  └─────────────────┘   │      │
+│  │         ▲                │ │         ▲                │ │         ▲                │      │
+│  │         │ ASG manages    │ │         │ ASG manages    │ │         │ ASG manages    │      │
+│  │         │ (min:1 max:7)  │ │         │ (min:1 max:7)  │ │         │ (min:1 max:7)  │      │
+│  │                         │ │                         │ │                         │      │
+│  │  Route Table:           │ │  Route Table:           │ │  Route Table:           │      │
+│  │  0.0.0.0/0 → NAT-GW-a  │ │  0.0.0.0/0 → NAT-GW-b  │ │  0.0.0.0/0 → NAT-GW-c  │      │
+│  │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │      │
+│  │                         │ │                         │ │                         │      │
+│  │  NACL: Allow 8080 from  │ │  NACL: Allow 8080 from  │ │  NACL: Allow 8080 from  │      │
+│  │        public subnets   │ │        public subnets   │ │        public subnets   │      │
+│  │        Allow 443 out    │ │        Allow 443 out    │ │        Allow 443 out    │      │
+│  │        Deny direct in   │ │        Deny direct in   │ │        Deny direct in   │      │
+│  └─────────────┬───────────┘ └─────────────┬───────────┘ └─────────────┬───────────┘      │
+│                │                            │                            │                   │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                              DATA SUBNETS (Database Tier)                                    │
+│  ════════════════════════════════════════════════════════════════════════════════════════════ │
+│                                                                                             │
+│  ┌─────────────────────────┐ ┌─────────────────────────┐ ┌─────────────────────────┐      │
+│  │  DATA SUBNET (AZ-a)     │ │  DATA SUBNET (AZ-b)     │ │  DATA SUBNET (AZ-c)     │      │
+│  │  10.0.21.0/24           │ │  10.0.22.0/24           │ │  10.0.23.0/24           │      │
+│  │                         │ │                         │ │                         │      │
+│  │  ┌─────────────────┐   │ │  ┌─────────────────┐   │ │                         │      │
+│  │  │  Aurora PRIMARY │   │ │  │  Aurora REPLICA │   │ │   (Available for        │      │
+│  │  │  (Writer)       │   │ │  │  (Reader)       │   │ │    future replica)      │      │
+│  │  │  SG: DB-SG      │   │ │  │  SG: DB-SG      │   │ │                         │      │
+│  │  │  Port 3306      │   │ │  │  Port 3306      │   │ │                         │      │
+│  │  └─────────────────┘   │ │  └─────────────────┘   │ │                         │      │
+│  │                         │ │                         │ │                         │      │
+│  │  Route Table:           │ │  Route Table:           │ │  Route Table:           │      │
+│  │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │ │  10.0.0.0/16 → local   │      │
+│  │  (NO 0.0.0.0/0 route!) │ │  (NO 0.0.0.0/0 route!) │ │  (NO 0.0.0.0/0 route!) │      │
+│  │                         │ │                         │ │                         │      │
+│  │  NACL: Allow 3306 from  │ │  NACL: Allow 3306 from  │ │  NACL: Allow 3306 from  │      │
+│  │        private subnets  │ │        private subnets  │ │        private subnets  │      │
+│  │        DENY ALL else    │ │        DENY ALL else    │ │        DENY ALL else    │      │
+│  └─────────────────────────┘ └─────────────────────────┘ └─────────────────────────┘      │
+│                                                                                             │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### How Components Connect (Flow)
+
+```
+INBOUND TRAFFIC:
+Internet → IGW → ALB (Public Subnet, ALB-SG: allow 443 from 0.0.0.0/0)
+              → EC2 (Private Subnet, APP-SG: allow 8080 from ALB-SG only)
+              → Aurora (Data Subnet, DB-SG: allow 3306 from APP-SG only)
+
+OUTBOUND TRAFFIC (App servers need patches/APIs):
+EC2 (Private Subnet) → NAT Gateway (Public Subnet) → IGW → Internet
+  Route: 0.0.0.0/0 → NAT-GW (per AZ)
+
+DATABASE (Zero internet):
+Aurora (Data Subnet) → ONLY talks to EC2 in private subnets
+  Route: 10.0.0.0/16 → local (NO default route = no internet path)
+```
+
+### Security Group Chain (Visual)
+
+```
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│    ALB-SG       │      │    APP-SG       │      │    DB-SG        │
+│                 │      │                 │      │                 │
+│ Inbound:        │      │ Inbound:        │      │ Inbound:        │
+│  443 from       │─────▶│  8080 from      │─────▶│  3306 from      │
+│  0.0.0.0/0      │      │  ALB-SG (ID)    │      │  APP-SG (ID)    │
+│                 │      │                 │      │                 │
+│ Outbound:       │      │ Outbound:       │      │ Outbound:       │
+│  8080 to APP-SG │      │  3306 to DB-SG  │      │  (Responses     │
+│                 │      │  443 to 0.0.0.0 │      │   only — via SG │
+│                 │      │  (patches/APIs)  │      │   stateful)     │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+```
+
+### NACL vs Security Group
+
+| Layer | NACL (Network ACL) | Security Group (SG) |
+|---|---|---|
+| Level | Subnet level (all traffic in/out of subnet) | Instance level (per ENI) |
+| Stateful? | ❌ Stateless (must allow return traffic explicitly) | ✅ Stateful (return traffic auto-allowed) |
+| Rules | Allow + Deny, processed in order | Allow only, all rules evaluated |
+| Default | Allow all (unless you restrict) | Deny all inbound (must add rules) |
+| Use case | Broad subnet-level blocks (deny known bad IPs) | Fine-grained per-instance access |
+
+### NACL Configuration
+
+```
+PUBLIC SUBNET NACL:
+┌──────────────────────────────────────────────────────┐
+│ INBOUND RULES:                                        │
+│  Rule 100: Allow TCP 443 from 0.0.0.0/0 (HTTPS)     │
+│  Rule 110: Allow TCP 80 from 0.0.0.0/0 (HTTP→redirect) │
+│  Rule 120: Allow TCP 1024-65535 from 0.0.0.0/0       │
+│            (Ephemeral ports — return traffic)          │
+│  Rule *:   DENY all (default)                         │
+│                                                       │
+│ OUTBOUND RULES:                                       │
+│  Rule 100: Allow TCP 8080 to 10.0.11.0/24           │
+│            (ALB → App servers AZ-a)                   │
+│  Rule 110: Allow TCP 8080 to 10.0.12.0/24           │
+│            (ALB → App servers AZ-b)                   │
+│  Rule 120: Allow TCP 8080 to 10.0.13.0/24           │
+│            (ALB → App servers AZ-c)                   │
+│  Rule 130: Allow TCP 1024-65535 to 0.0.0.0/0        │
+│            (Responses back to clients)                │
+│  Rule *:   DENY all (default)                         │
+└──────────────────────────────────────────────────────┘
+
+PRIVATE SUBNET NACL:
+┌──────────────────────────────────────────────────────┐
+│ INBOUND RULES:                                        │
+│  Rule 100: Allow TCP 8080 from 10.0.1.0/24          │
+│            (From public subnet AZ-a — ALB)           │
+│  Rule 110: Allow TCP 8080 from 10.0.2.0/24          │
+│            (From public subnet AZ-b — ALB)           │
+│  Rule 120: Allow TCP 8080 from 10.0.3.0/24          │
+│            (From public subnet AZ-c — ALB)           │
+│  Rule 130: Allow TCP 1024-65535 from 0.0.0.0/0      │
+│            (Return traffic from NAT/internet)         │
+│  Rule *:   DENY all (default)                         │
+│                                                       │
+│ OUTBOUND RULES:                                       │
+│  Rule 100: Allow TCP 3306 to 10.0.21.0/24           │
+│            (App → Aurora AZ-a)                        │
+│  Rule 110: Allow TCP 3306 to 10.0.22.0/24           │
+│            (App → Aurora AZ-b)                        │
+│  Rule 120: Allow TCP 443 to 0.0.0.0/0               │
+│            (Outbound HTTPS via NAT — patches, APIs)  │
+│  Rule 130: Allow TCP 1024-65535 to 10.0.1.0/24      │
+│            (Responses back to ALB)                    │
+│  Rule *:   DENY all (default)                         │
+└──────────────────────────────────────────────────────┘
+
+DATA SUBNET NACL:
+┌──────────────────────────────────────────────────────┐
+│ INBOUND RULES:                                        │
+│  Rule 100: Allow TCP 3306 from 10.0.11.0/24         │
+│            (From private subnet AZ-a — App)          │
+│  Rule 110: Allow TCP 3306 from 10.0.12.0/24         │
+│            (From private subnet AZ-b — App)          │
+│  Rule 120: Allow TCP 3306 from 10.0.13.0/24         │
+│            (From private subnet AZ-c — App)          │
+│  Rule *:   DENY all (NO internet, NO other access)   │
+│                                                       │
+│ OUTBOUND RULES:                                       │
+│  Rule 100: Allow TCP 1024-65535 to 10.0.11.0/24     │
+│            (Response to app servers AZ-a)             │
+│  Rule 110: Allow TCP 1024-65535 to 10.0.12.0/24     │
+│            (Response to app servers AZ-b)             │
+│  Rule 120: Allow TCP 1024-65535 to 10.0.13.0/24     │
+│            (Response to app servers AZ-c)             │
+│  Rule *:   DENY all (default)                         │
+└──────────────────────────────────────────────────────┘
+```
+
+### ASG Placement Across Subnets
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   AUTO SCALING GROUP                              │
+│                                                                 │
+│  Configuration:                                                  │
+│    Min: 3 | Desired: 3 | Max: 20                                │
+│    vpc_zone_identifier: [subnet-a, subnet-b, subnet-c]          │
+│    health_check_type: ELB                                        │
+│    target_group_arns: [alb-target-group]                        │
+│                                                                 │
+│  ASG distributes instances evenly across 3 AZs:                 │
+│                                                                 │
+│  AZ-a (10.0.11.0/24)    AZ-b (10.0.12.0/24)    AZ-c (10.0.13.0/24) │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │
+│  │ EC2: i-abc001   │    │ EC2: i-abc002   │    │ EC2: i-abc003   │  │
+│  │ IP: 10.0.11.45  │    │ IP: 10.0.12.67  │    │ IP: 10.0.13.23  │  │
+│  │ SG: APP-SG      │    │ SG: APP-SG      │    │ SG: APP-SG      │  │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘  │
+│                                                                 │
+│  If AZ-a fails → ASG launches replacement in AZ-b or AZ-c      │
+│  If traffic spikes → ASG adds instances evenly across all AZs   │
+│  Scale-out: 3 → 6 → 9 → ... (balanced distribution)            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Complete Connection Summary Table
+
+| From | To | Port | Via | Allowed By |
+|---|---|---|---|---|
+| Internet | ALB | 443 (HTTPS) | IGW → Public Subnet | ALB-SG + Public NACL |
+| ALB | EC2 (App) | 8080 | Cross-subnet (VPC local route) | APP-SG (source: ALB-SG) + Private NACL |
+| EC2 (App) | Aurora (DB) | 3306 | Cross-subnet (VPC local route) | DB-SG (source: APP-SG) + Data NACL |
+| EC2 (App) | Internet | 443 (outbound) | NAT Gateway → IGW | APP-SG outbound + Private NACL outbound |
+| Aurora | Internet | ❌ BLOCKED | No route exists | No 0.0.0.0/0 in data route table |
+| Internet | EC2 (App) | ❌ BLOCKED | No IGW route in private subnet | Private NACL denies + no route |
+| Internet | Aurora (DB) | ❌ BLOCKED | No IGW route, no NAT route | Data NACL denies + no route |
+
 ---
 
 ## 9. Web Tier (ALB + WAF + CloudFront)
