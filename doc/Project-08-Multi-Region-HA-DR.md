@@ -93,6 +93,69 @@ If you can't answer with concrete numbers (RTO/RPO) and a tested architecture �
 
 ## 3. RTO/RPO Design Decisions
 
+### What is RPO and RTO? (Simple English)
+
+**RPO (Recovery Point Objective) — "How much DATA can we LOSE?"**
+
+Simple analogy: RPO is like asking "when did you last save your Word document?"
+- If you save every 5 minutes → max you lose = 5 minutes of typing
+- If you save every 1 hour → max you lose = 1 hour of typing
+
+In our project: Aurora Global replicates every ~1 second. If the region dies RIGHT NOW, we lose maximum 1 second of data.
+
+**RTO (Recovery Time Objective) — "How long are we DOWN?"**
+
+Simple analogy: If your car breaks down, how quickly can you get a replacement?
+- Spare car in driveway → 5 minutes (walk, get keys, drive)
+- Need to rent a car → 2 hours (call, wait, paperwork)
+- Need to buy a new car → days
+
+In our project: Route53 detects failure in 30s, DNS switches in 60s, compute scales in 90s. Total: ~3 minutes.
+
+**One Picture to Remember Both:**
+
+```
+         ← RPO (data loss) →          ← RTO (downtime) →
+         
+─────────────────────────── DISASTER ──────────────────────────── RECOVERED
+                            EVENT
+         
+ Last good data              │                                First request
+ was replicated              │                                served from DR
+ 1 second ago                │                                3 min later
+                             │
+                        💥 Region dies 💥
+```
+
+**Real Example from Our Platform:**
+```
+10:00:00.000 — Customer places order → saved to Aurora (us-east-1)
+10:00:00.800 — Aurora replicates to us-west-2 (arrives)
+10:00:01.000 — us-east-1 DIES completely
+
+RPO impact: Lost 0.2 seconds of data (maybe 1 transaction)
+
+10:00:01 — Region fails
+10:00:31 — Route53 detects (3 health check failures × 10s)
+10:01:31 — DNS failover complete (users get new IP)
+10:03:10 — DR instances healthy, serving traffic
+
+RTO impact: Users had errors for ~3 minutes
+```
+
+**Why Both Matter (Business Perspective):**
+
+| Application Type | Acceptable RPO | Acceptable RTO | DR Cost |
+|---|---|---|---|
+| Personal blog | 24 hours (daily backup) | 1 day | $5/month |
+| Internal tool | 1 hour | 4 hours | $50/month |
+| **Our e-commerce ($2M/hour)** | **< 5 seconds** | **< 5 minutes** | **$400/month** |
+| Stock trading platform | 0 (zero loss) | 0 (instant) | $10,000+/month |
+
+**Key rule:** Tighter RPO/RTO = more expensive. Our Pilot Light ($400/mo) gives <5s RPO and <5 min RTO — best cost/recovery balance for our business.
+
+---
+
 ### Our Targets vs Achieved
 
 | Metric | Target | Achieved (in DR drill) | How |
