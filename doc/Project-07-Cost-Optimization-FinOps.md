@@ -52,25 +52,162 @@ If you can't answer with numbers, you look like someone who just spends company 
 
 ---
 
-## 3. The Cost Problem (Before)
+## 3. The Cost Problem (Before) — Connected to Our Projects
+
+### How Cost Was Wasting Money in Projects 1, 2, and 3
 
 ```
 Monthly AWS bill: $45,000/month (growing 20% monthly)
 
-Where was money going?
-├── 40% EC2 instances (many oversized, running 24/7 including dev/test)
-├── 25% RDS (oversized, single-AZ in dev getting Multi-AZ pricing)
-├── 15% NAT Gateway (data transfer through NAT unnecessarily)
-├── 10% S3 (old data never moved to Glacier)
-└── 10% Other (unused EIPs, orphan EBS, idle load balancers)
-
-Problems:
-- No tagging → can't attribute costs to teams
-- Dev/test running 24/7 → paying for nights/weekends (65% waste)
-- No rightsizing → m5.2xlarge running at 8% CPU
-- No lifecycle → 2 years of logs in S3 Standard ($$$)
-- Nobody accountable → "it's just cloud cost, who cares"
+WHERE THE MONEY WAS LEAKING:
 ```
+
+### Project 2 (3-Tier AWS Architecture) — Cost Leaks
+
+| Problem | What Was Happening | Monthly Waste |
+|---|---|---|
+| Oversized EC2 in ASG | m5.2xlarge running at 8% CPU (team picked "big just in case") | $180/instance × 6 = $1,080 |
+| NAT Gateway data transfer | App servers downloading from S3 through NAT ($0.045/GB) instead of VPC Endpoint (free) | $800 |
+| Dev/Staging RDS Multi-AZ | Why does DEV database need Multi-AZ failover? It doesn't. | $400 |
+| ALB idle in dev | Dev ALB running 24/7, used 2 hours/day during testing | $25 |
+| EBS GP2 instead of GP3 | Old default. GP3 is 20% cheaper AND faster | $150 |
+| No S3 lifecycle | 2 years of ALB access logs sitting in S3 Standard ($0.023/GB) instead of Glacier ($0.004/GB) | $600 |
+| CloudWatch logs forever | Retention set to "never expire" — accumulating cost | $200 |
+
+**Total waste in 3-Tier project alone: ~$3,255/month**
+
+### Project 3 (EKS/Kubernetes) — Cost Leaks
+
+| Problem | What Was Happening | Monthly Waste |
+|---|---|---|
+| Over-provisioned pod requests | Devs set `cpu: "2", memory: "4Gi"` but actual usage: `cpu: 0.3, memory: 800Mi`. Nodes look full but are 80% idle. | $2,000 (extra nodes) |
+| No spot for non-critical | CI runners and batch jobs on on-demand instances | $700 |
+| Cluster Autoscaler slow | Keeps 2 extra nodes "just in case" (5-min provision buffer) | $280 |
+| Staging EKS 24/7 | 3 worker nodes running all weekend for zero traffic | $400 |
+| No Karpenter consolidation | 5 nodes at 30% utilization each — could be 2 nodes at 75% | $420 |
+| Container Insights ($$$) | Paying CloudWatch for metrics Prometheus already collects free | $150 |
+
+**Total waste in EKS project alone: ~$3,950/month**
+
+### Project 1 (DevSecOps Pipeline) — Cost Leaks
+
+| Problem | What Was Happening | Monthly Waste |
+|---|---|---|
+| Jenkins agent always running | t3.large agent 24/7 but builds only run 4 hours/day | $45 |
+| SonarQube always on | Running 24/7 for 2 scans/day | $30 |
+| S3 scan reports never cleaned | Trivy/ZAP HTML reports accumulating (no lifecycle) | $15 |
+| Docker images never pruned in ECR | 200+ old images with no lifecycle policy | $10 |
+
+**Total waste in CI/CD project: ~$100/month** (small, but multiplied across teams)
+
+---
+
+### The Bigger Picture: WHY It Was Happening
+
+```
+ROOT CAUSES (not just technical):
+
+1. "Pick big instance, we might need it" → No rightsizing culture
+2. "Leave it running, might need it later" → No auto-stop, no accountability
+3. "Cloud is someone else's budget" → No per-team cost visibility
+4. "I don't know how much my stuff costs" → No tagging, no dashboards
+5. "Costs grew gradually — nobody noticed" → No alerts, no reviews
+```
+
+---
+
+### After: How We Fixed Each Problem
+
+### Project 2 (3-Tier) Optimizations
+
+| Problem | Solution | Monthly Savings |
+|---|---|---|
+| Oversized EC2 | Compute Optimizer → switched to m5.large (matches real usage) | $720 |
+| NAT data transfer | Added S3 VPC Endpoint (free, private path) | $800 |
+| Dev RDS Multi-AZ | Terraform: `multi_az = var.environment == "prod" ? true : false` | $400 |
+| GP2 → GP3 | Terraform module defaults to GP3 | $150 |
+| S3 lifecycle | Auto-transition: 30d → IA, 90d → Glacier, 365d → delete | $600 |
+| CloudWatch retention | Set all log groups to 30 days (not forever) | $200 |
+| **Subtotal** | | **$2,870/mo saved** |
+
+### Project 3 (EKS) Optimizations
+
+| Problem | Solution | Monthly Savings |
+|---|---|---|
+| Over-provisioned pods | VPA in recommend mode → teams adjusted requests to actual usage | $2,000 |
+| No spot for CI | Karpenter NodePool: `capacity-type: ["spot"]` for CI runners taint | $700 |
+| Slow scaling | Switched to Karpenter (60s vs 3-5 min). Removed buffer nodes. | $280 |
+| Staging 24/7 | EventBridge → Lambda scales node group to 0 at 8 PM weekdays + all weekend | $400 |
+| Poor bin-packing | Karpenter `consolidationPolicy: WhenUnderutilized` — auto-removes half-empty nodes | $420 |
+| Container Insights | Disabled. Already have Prometheus (free, same metrics). | $150 |
+| **Subtotal** | | **$3,950/mo saved** |
+
+### Project 1 (CI/CD) Optimizations
+
+| Problem | Solution | Monthly Savings |
+|---|---|---|
+| Jenkins agent 24/7 | Kubernetes-based ephemeral agents (pod per build, dies after) | $45 |
+| SonarQube 24/7 | Scheduled: scale to 0 outside work hours (or use SonarCloud) | $30 |
+| S3 reports accumulating | S3 lifecycle: delete scan reports after 30 days | $15 |
+| ECR images not pruned | ECR lifecycle policy: keep last 10 images per repo, delete older | $10 |
+| **Subtotal** | | **$100/mo saved** |
+
+---
+
+### Before vs After Summary
+
+```
+BEFORE: $45,000/month (growing, uncontrolled, no visibility)
+
+AFTER: $29,000/month (35% reduction)
+
+HOW:
+├── Project 2 savings: $2,870/month
+├── Project 3 savings: $3,950/month  
+├── Project 1 savings: $100/month
+├── Non-prod auto-stop (ALL projects): $8,500/month
+├── Savings Plans (steady baseline): $3,000/month
+└── Other (orphans, lifecycle, Graviton): $2,480/month
+    
+TOTAL SAVINGS: ~$16,000/month = ~$192,000/year
+```
+
+---
+
+### One Visual: How FinOps Wraps Around All Projects
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  FinOps Layer (THIS PROJECT — wraps around everything)               │
+│                                                                     │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐          │
+│  │ Project 1     │  │ Project 2     │  │ Project 3     │          │
+│  │ CI/CD Pipeline│  │ 3-Tier AWS    │  │ EKS Platform  │          │
+│  │               │  │               │  │               │          │
+│  │ Optimized:    │  │ Optimized:    │  │ Optimized:    │          │
+│  │ • Ephemeral   │  │ • Rightsized  │  │ • VPA         │          │
+│  │   agents      │  │ • VPC Endpoint│  │ • Karpenter   │          │
+│  │ • ECR prune   │  │ • GP3 default │  │ • Spot nodes  │          │
+│  │ • Report      │  │ • S3 lifecycle│  │ • Kubecost    │          │
+│  │   lifecycle   │  │ • Dev auto-off│  │ • Auto-off    │          │
+│  └───────────────┘  └───────────────┘  └───────────────┘          │
+│                                                                     │
+│  Controls:                                                          │
+│  • Tagging SCP (Project 4) — can't create untagged resources       │
+│  • Budget alerts per team/account                                   │
+│  • Infracost on every Terraform PR (cost visible before merge)     │
+│  • Monthly review meeting (team leads see their spend)             │
+│  • Grafana cost dashboard (real-time per team per project)         │
+│                                                                     │
+│  Automation:                                                        │
+│  • Auto-stop non-prod (Lambda + EventBridge — Project 5 pattern!)  │
+│  • Auto-cleanup orphans (Lambda — same serverless approach)        │
+│  • Auto-rightsize alerts (Compute Optimizer → Slack weekly)        │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key insight:** The FinOps automation uses the SAME serverless pattern as Project 5 (EventBridge → Lambda → notify). We already know how to build this.
 
 ---
 
