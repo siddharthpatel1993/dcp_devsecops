@@ -58,6 +58,18 @@ A Landing Zone is a **pre-configured, secure, multi-account AWS environment** th
 
 ## 3. Account Structure (Organization Design)
 
+### What is an OU (Organizational Unit)?
+
+**OU = Organizational Unit** — a logical folder/group within AWS Organizations that contains AWS accounts.
+
+**Simple analogy:** Think of a company building with floors.
+- The building = your AWS Organization
+- Each floor = an OU (Security floor, Production floor, Dev floor)
+- Each office on a floor = an AWS Account
+- Building rules per floor = SCPs (Service Control Policies applied at OU level)
+
+**Why OUs matter:** You apply SCPs at the OU level. All accounts inside that OU inherit the same guardrails automatically — no need to configure each account individually. Move an account to a different OU → it instantly gets that OU's policies.
+
 ```
 Management Account (root — billing only, no workloads ever)
 │
@@ -183,6 +195,26 @@ Single Sign-On for all AWS accounts. Users log in ONCE (via company directory �
 ---
 
 ## 6. CI/CD Cross-Account Access (OIDC)
+
+### What is OIDC? (Simple English)
+
+**OIDC = OpenID Connect** — a way for your CI/CD pipeline (GitHub Actions) to prove its identity to AWS and get temporary access WITHOUT storing any passwords or access keys.
+
+**Simple analogy — Hotel key card system:**
+- **Old way (Access Keys):** You get a **master key** that opens every room forever. If you lose it, anyone can get in. You must change all locks manually.
+- **OIDC way:** You go to hotel reception (AWS), show your ID card (GitHub token), and get a **temporary key card** that opens only YOUR room and expires in 15 minutes. Lost it? Useless in 15 minutes anyway.
+
+**Why OIDC over Access Keys?**
+
+| Old Way (Access Keys) | OIDC Way |
+|---|---|
+| Permanent keys stored in GitHub secrets | No keys stored anywhere |
+| Works from any repo/branch if leaked | Only YOUR specific repo + specific branch |
+| Must manually rotate every 90 days | Auto-expires in 15 min (zero rotation) |
+| If leaked → permanent access until you notice | If leaked → useless in 15 min |
+| Hard to audit "who used this key?" | CloudTrail shows exactly which repo/branch/workflow |
+
+**One-liner:** OIDC = GitHub proves who it is → AWS gives 15-min temporary credentials → no passwords stored anywhere.
 
 ### The Problem
 
@@ -338,6 +370,82 @@ terraform/
     ├── permission_sets.tf
     └── github_oidc.tf
 ```
+
+---
+
+---
+
+## How This Project Connects to Other Projects (Portfolio Context)
+
+### The Landing Zone is the FOUNDATION
+
+This project isn't standalone — it's the platform that makes all other projects possible in an enterprise:
+
+```
+Project 4: Landing Zone (THE FOUNDATION)
+│
+├── Creates the AWS accounts where everything lives
+├── Networking (VPC, Transit Gateway) that Project 2 uses
+├── OIDC that Project 1's Jenkins/GitHub Actions uses to deploy
+├── Security guardrails (SCPs) that protect Project 2 & 3
+│
+├──► Project 2 (3-Tier AWS) lives INSIDE the "Workloads/Prod" account
+├──► Project 3 (EKS) lives INSIDE the "Workloads/Prod" account
+└──► Project 1 (CI/CD Pipeline) lives INSIDE the "Shared Services" account
+     and uses OIDC to deploy INTO the Workloads accounts
+```
+
+### End-to-End Flow: How All Projects Work Together
+
+```
+Developer pushes code
+    │
+    ▼
+Project 1: Jenkins (in Shared Services Account)
+    │ uses OIDC (Project 4) to assume role in Prod Account
+    ▼
+Project 3: Deploys to EKS cluster (in Workloads/Prod Account)
+    │ which runs inside
+    ▼
+Project 2: VPC/Networking (created by Landing Zone - Project 4)
+    │
+    ▼
+All protected by SCPs (Project 4) — can't disable logging, can't open DB to internet
+```
+
+### Where Each Component Lives
+
+| Component | AWS Account (from Landing Zone) | Why Here |
+|---|---|---|
+| Jenkins / CI/CD platform | Shared Services Account (Infrastructure OU) | Shared by all teams, not owned by one app |
+| Docker Registry (ECR) | Shared Services Account | All teams push/pull images |
+| EKS Cluster (Production) | App Prod Account (Workloads/Production OU) | Isolated from dev, SCPs protect it |
+| 3-Tier App (ALB, ASG, RDS) | App Prod Account (Workloads/Production OU) | Same account as EKS or separate per-app |
+| EKS Cluster (Dev/Staging) | App Dev Account (Workloads/Non-Production OU) | Developers can experiment freely here |
+| CloudTrail / Audit Logs | Log Archive Account (Security OU) | Immutable — nobody can delete evidence |
+| GuardDuty / Security Hub | Security Tooling Account (Security OU) | Central security visibility |
+| Terraform State (S3 + DynamoDB) | Shared Services Account | Central, access-controlled |
+
+### Who is Responsible for This at 12 YOE?
+
+**You are.** This is a core responsibility of a Senior/Staff DevOps & Cloud Engineer.
+
+| Activity | Your Responsibility |
+|---|---|
+| Design OU structure | ✅ You design it based on business/compliance needs |
+| Write SCPs | ✅ You write, test, and apply them |
+| Implement SSO | ✅ You configure IAM Identity Center |
+| Set up OIDC for CI/CD | ✅ You build this (no access keys anywhere) |
+| Account vending automation | ✅ You build the Terraform that creates accounts with baseline |
+| Centralized security (GuardDuty, Config) | ✅ You configure and maintain |
+| Present to leadership/auditors | ✅ You explain and defend the design |
+| Evolve as company grows | ✅ New teams, new compliance, new regions — you adapt |
+
+**What's NOT your responsibility:** Budget approval (VP/Director), compliance requirements definition (Security team), which teams exist (Engineering managers).
+
+### Interview Key Point
+
+> "The Landing Zone is the foundation. My CI/CD pipeline, 3-tier infrastructure, and Kubernetes clusters all run within the governed accounts it creates. Without it, you'd have 15 accounts with no guardrails, no audit trail, no cost attribution, and no security baseline. The Landing Zone makes enterprise-grade operations possible."
 
 ---
 

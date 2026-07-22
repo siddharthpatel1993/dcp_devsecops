@@ -1,10 +1,10 @@
 # Project 5: Serverless Event-Driven Architecture
 
-## Building Without Servers — Lambda, API Gateway, DynamoDB
+## Serverless Operations Automation Platform — Self-Healing Infrastructure
 
 **Author:** Siddharth Patel  
 **Role:** Staff/Principal DevOps & Cloud Engineer (12 YOE)  
-**Technologies:** AWS Lambda, API Gateway, DynamoDB, S3, SQS, SNS, EventBridge, SAM
+**Technologies:** AWS Lambda, API Gateway, EventBridge, Step Functions, DynamoDB, S3, SQS, SNS, SAM, CloudWatch, AWS Config
 
 ---
 
@@ -113,39 +113,335 @@ API Gateway → Lambda (validate order) → DynamoDB (save order)
 
 ## 4. Project Architecture
 
-### What We Built: Image Processing Pipeline
+### What We Built: Serverless Operations Automation Platform
+
+**How this connects to Projects 1-4:**
+
+| Event Source | From Which Project | What Happens |
+|---|---|---|
+| Security Group violation | Project 2 (3-Tier AWS) & Project 4 (Landing Zone) | Lambda auto-remediates (removes bad rule) |
+| CI/CD deploy event | Project 1 (DevSecOps Pipeline) | Lambda creates Jira ticket on failure, notifies Slack |
+| EKS node unhealthy | Project 3 (Kubernetes) | Lambda cordons node, pages on-call |
+| Cost threshold exceeded | Project 2 (3-Tier AWS) | Lambda generates report, tags resources, alerts team lead |
+| New account requested | Project 4 (Landing Zone) | Step Functions runs account vending workflow |
+| S3 bucket made public | Project 4 (Landing Zone SCPs missed edge case) | Lambda removes public access instantly |
+| SSL cert expiring < 14 days | Project 2 (3-Tier) & Project 3 (EKS Ingress) | Lambda creates renewal ticket |
+
+### Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  USER-FACING API                                         │
-│                                                          │
-│  Route53 → API Gateway (REST) → Lambda (CRUD)           │
-│                                     │                    │
-│                                     ▼                    │
-│                               DynamoDB (metadata)        │
-└───────────────────────────────┬─────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────┐
-│  EVENT-DRIVEN BACKEND                                    │
-│                                                          │
-│  S3 Upload Event → Lambda (resize/thumbnail)             │
-│       │                    │                             │
-│       ▼                    ▼                             │
-│  EventBridge         S3 (processed/)                     │
-│       │                                                  │
-│       ├──→ SQS → Lambda (generate PDF report)           │
-│       │                                                  │
-│       └──→ SNS → Email notification to user              │
-└──────────────────────────────────────────────────────────┘
-                                │
-┌───────────────────────────────▼─────────────────────────┐
-│  MONITORING                                              │
-│                                                          │
-│  CloudWatch Metrics → Alarms → SNS → PagerDuty          │
-│  X-Ray (distributed tracing across Lambdas)              │
-│  CloudWatch Logs (each Lambda auto-logs)                 │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EVENT SOURCES (from Projects 1-4)                                               │
+│                                                                                 │
+│  Project 1 (CI/CD)──→ Jenkins Webhook ──→ API Gateway                          │
+│  Project 2 (3-Tier)──→ AWS Config Rule ──→ EventBridge                         │
+│  Project 3 (EKS)────→ CloudWatch Alarm ──→ EventBridge                         │
+│  Project 4 (Landing)─→ GuardDuty Finding─→ EventBridge                         │
+│                        AWS Budgets ──────→ SNS                                   │
+│                        Scheduled (daily)─→ EventBridge (cron)                   │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EVENT ROUTING (EventBridge — the Air Traffic Controller)                        │
+│                                                                                 │
+│  Rule: source=aws.config, detail-type=ConfigRuleViolation ──→ Lambda-Remediate  │
+│  Rule: source=aws.health, detail=EKS ──────────────────────→ Lambda-K8sOps     │
+│  Rule: source=custom.cicd, detail=deploy-failed ───────────→ Lambda-Notify     │
+│  Rule: schedule(rate=1 day) ───────────────────────────────→ Lambda-CertCheck  │
+│  Rule: source=aws.guardduty ───────────────────────────────→ Lambda-Security   │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  PROCESSING (Lambda Functions — the Workers)                                     │
+│                                                                                 │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐             │
+│  │ Lambda:           │  │ Lambda:           │  │ Lambda:           │             │
+│  │ auto-remediate    │  │ cert-checker      │  │ cost-reporter     │             │
+│  │                   │  │                   │  │                   │             │
+│  │ • Remove bad SG   │  │ • Scan ACM certs  │  │ • Query Cost Exp  │             │
+│  │ • Block public S3 │  │ • Check custom    │  │ • Tag untagged    │             │
+│  │ • Fix IAM issues  │  │   certs on EC2/K8s│  │ • Generate report │             │
+│  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘             │
+│           │                      │                      │                       │
+│  ┌────────▼─────────┐  ┌────────▼─────────┐  ┌────────▼─────────┐             │
+│  │ Lambda:           │  │ Lambda:           │  │ Step Functions:   │             │
+│  │ k8s-ops           │  │ deploy-notifier   │  │ account-vending   │             │
+│  │                   │  │                   │  │                   │             │
+│  │ • Cordon node     │  │ • Parse event     │  │ • Create account  │             │
+│  │ • Scale node group│  │ • Create Jira     │  │ • Apply baseline  │             │
+│  │ • Restart pod     │  │ • Notify Slack    │  │ • Setup networking│             │
+│  └────────┬─────────┘  └────────┬─────────┘  │ • Configure SSO   │             │
+│           │                      │             │ • Notify team      │             │
+│           │                      │             └────────┬─────────┘             │
+└───────────┼──────────────────────┼──────────────────────┼───────────────────────┘
+            │                      │                      │
+            ▼                      ▼                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  STORAGE & NOTIFICATIONS                                                         │
+│                                                                                 │
+│  DynamoDB (audit trail — every action logged with timestamp)                    │
+│  S3 (reports — cost reports, compliance reports, cert status)                   │
+│  Slack (real-time team notifications — #ops-automation channel)                 │
+│  PagerDuty (P1 alerts — only on critical: node down, security breach)          │
+│  Jira (auto-created tickets — deploy failures, cert renewals)                  │
+│  Email (weekly summary — cost report to team leads)                             │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why Serverless for This? (Not Containers)
+
+| Reason | Explanation |
+|---|---|
+| Variable traffic | Security events happen 0-50 times/day. Paying for a container 24/7 to handle 5 events = wasteful |
+| Event-driven by nature | React to events, not serve constant requests |
+| Short execution | Each remediation takes 2-10 seconds (well under 15 min limit) |
+| Zero ops | No patching Lambda. Focus on the automation logic, not infrastructure |
+| Cost | ~$5-10/month for all functions vs ~$150/month for an ECS service doing the same |
+| Scale to zero | Weekends/nights = zero events = $0 cost |
+
+---
+
+## 4a. Detailed Use Cases (How Each Lambda Works)
+
+### Use Case 1: Auto-Remediate Security Group Violation (Project 2 & 4)
+
+**Trigger:** AWS Config rule detects SG with port 22 open to 0.0.0.0/0
+
+```
+AWS Config Rule fires → EventBridge → Lambda (auto-remediate)
+```
+
+```python
+# lambda_function.py — Security Group auto-remediation
+import boto3
+import json
+
+ec2 = boto3.client('ec2')
+dynamodb = boto3.resource('dynamodb')
+audit_table = dynamodb.Table('ops-automation-audit')
+
+def handler(event, context):
+    # Extract violation details from Config event
+    sg_id = event['detail']['resourceId']
+    
+    # Remove the offending rule
+    ec2.revoke_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[{
+            'IpProtocol': 'tcp',
+            'FromPort': 22,
+            'ToPort': 22,
+            'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+        }]
+    )
+    
+    # Log to DynamoDB (audit trail)
+    audit_table.put_item(Item={
+        'event_id': context.aws_request_id,
+        'timestamp': event['time'],
+        'action': 'REMEDIATE_SG',
+        'resource': sg_id,
+        'detail': 'Removed SSH 0.0.0.0/0 rule',
+        'status': 'SUCCESS'
+    })
+    
+    # Notify Slack
+    notify_slack(f"🔒 Auto-remediated: SG {sg_id} had port 22 open to world. Rule removed.")
+    
+    return {'statusCode': 200, 'body': f'Remediated {sg_id}'}
+```
+
+**Result:** Within 30 seconds of someone opening SSH to the world, Lambda removes it automatically. No human needed. Full audit trail in DynamoDB.
+
+---
+
+### Use Case 2: CI/CD Deploy Failure Notification (Project 1)
+
+**Trigger:** Jenkins webhook on deploy failure → API Gateway → Lambda
+
+```python
+# lambda_function.py — Deploy failure handler
+def handler(event, context):
+    body = json.loads(event['body'])
+    
+    job_name = body['job_name']       # e.g., "learneasyai-prod-deploy"
+    build_number = body['build_number']
+    status = body['status']            # "FAILURE"
+    commit_sha = body['commit_sha']
+    author = body['author']
+    
+    if status == 'FAILURE':
+        # Create Jira ticket
+        jira_ticket = create_jira_ticket(
+            summary=f"Deploy Failed: {job_name} #{build_number}",
+            description=f"Commit: {commit_sha}\nAuthor: {author}\nLogs: {body['build_url']}",
+            priority="High"
+        )
+        
+        # Notify Slack with context
+        notify_slack(
+            channel="#deployments",
+            message=f"❌ Deploy FAILED: {job_name} #{build_number}\n"
+                    f"Author: {author}\n"
+                    f"Jira: {jira_ticket}\n"
+                    f"Logs: {body['build_url']}"
+        )
+        
+        # Log to DynamoDB
+        log_audit('DEPLOY_FAILURE', job_name, build_number)
+    
+    return {'statusCode': 200}
+```
+
+---
+
+### Use Case 3: EKS Node Unhealthy (Project 3)
+
+**Trigger:** CloudWatch Alarm (EKS node NotReady > 5 min) → EventBridge → Lambda
+
+```python
+# lambda_function.py — K8s node operations
+import boto3
+from kubernetes import client, config
+
+def handler(event, context):
+    node_name = event['detail']['dimensions']['NodeName']
+    cluster_name = event['detail']['dimensions']['ClusterName']
+    
+    # Get EKS credentials
+    eks = boto3.client('eks')
+    cluster_info = eks.describe_cluster(name=cluster_name)
+    
+    # Connect to K8s API
+    # (Uses IRSA — Lambda has IAM role with EKS access)
+    k8s_client = get_k8s_client(cluster_info)
+    
+    # Cordon the node (prevent new pods)
+    body = {"spec": {"unschedulable": True}}
+    k8s_client.patch_node(node_name, body)
+    
+    # Page on-call (P1 — node is down)
+    trigger_pagerduty(
+        severity="critical",
+        summary=f"EKS node {node_name} in {cluster_name} is NotReady. Auto-cordoned.",
+        details=f"Node has been cordoned. Investigate and drain if needed."
+    )
+    
+    # Log action
+    log_audit('NODE_CORDONED', node_name, cluster_name)
+    
+    return {'statusCode': 200}
+```
+
+---
+
+### Use Case 4: SSL Certificate Expiry Check (Projects 2 & 3)
+
+**Trigger:** EventBridge scheduled rule (runs daily at 9 AM)
+
+```python
+# lambda_function.py — Certificate expiry scanner
+import boto3
+from datetime import datetime, timedelta
+
+acm = boto3.client('acm')
+WARNING_DAYS = 30
+CRITICAL_DAYS = 14
+
+def handler(event, context):
+    # Scan all ACM certificates
+    certs = acm.list_certificates()['CertificateSummaryList']
+    expiring_soon = []
+    
+    for cert in certs:
+        detail = acm.describe_certificate(CertificateArn=cert['CertificateArn'])
+        expiry = detail['Certificate']['NotAfter']
+        days_left = (expiry - datetime.now(expiry.tzinfo)).days
+        
+        if days_left <= CRITICAL_DAYS:
+            expiring_soon.append({'cert': cert['DomainName'], 'days': days_left, 'severity': 'CRITICAL'})
+        elif days_left <= WARNING_DAYS:
+            expiring_soon.append({'cert': cert['DomainName'], 'days': days_left, 'severity': 'WARNING'})
+    
+    if expiring_soon:
+        for cert_info in expiring_soon:
+            # Create Jira ticket for renewal
+            create_jira_ticket(
+                summary=f"SSL Cert Expiring: {cert_info['cert']} ({cert_info['days']} days)",
+                priority="Critical" if cert_info['severity'] == 'CRITICAL' else "High"
+            )
+        
+        # Slack summary
+        notify_slack(f"🔐 Certificate Report: {len(expiring_soon)} certs expiring within {WARNING_DAYS} days")
+    
+    # Store report in S3
+    save_report_to_s3(expiring_soon)
+    
+    return {'statusCode': 200, 'expiring': len(expiring_soon)}
+```
+
+---
+
+### Use Case 5: Account Vending (Project 4 — Step Functions)
+
+**Trigger:** ServiceNow approval webhook → API Gateway → Step Functions
+
+```
+Step 1: Create AWS Account (Organizations API)
+    │ Wait 60s (account activation)
+    ▼
+Step 2: Move to correct OU (SCPs auto-apply)
+    │
+    ▼
+Step 3: Apply baseline (Terraform via CodeBuild)
+    │ - VPC, CloudTrail, GuardDuty, Config
+    ▼
+Step 4: Configure SSO permission sets
+    │
+    ▼
+Step 5: Notify team (Slack + Email)
+    │
+    ▼
+Step 6: Update DynamoDB (account registry)
+    │
+    ▼
+Step 7: Close ServiceNow ticket (API call)
+```
+
+**Why Step Functions (not single Lambda)?** Account vending takes 10-15 minutes total (waiting for account activation, Terraform apply, health checks). Single Lambda has 15 min max. Step Functions can run for up to 1 year, with retries per step and visual debugging.
+
+---
+
+### Use Case 6: Cost Alert & Auto-Tagging (Project 2)
+
+**Trigger:** AWS Budget threshold exceeded → SNS → Lambda
+
+```python
+def handler(event, context):
+    budget_name = event['Records'][0]['Sns']['Message']  # Parse SNS
+    
+    # Find untagged resources (likely cause of unexpected cost)
+    untagged = find_untagged_resources()
+    
+    # Auto-tag with "NeedsOwner" 
+    for resource in untagged:
+        tag_resource(resource['arn'], {'CostCenter': 'UNASSIGNED', 'NeedsOwner': 'true'})
+    
+    # Generate cost breakdown report
+    report = generate_cost_report_by_service()
+    save_to_s3(report, f"cost-reports/{today}.html")
+    
+    # Notify team lead with report link
+    notify_slack(
+        channel="#finops",
+        message=f"💰 Budget alert: {budget_name} exceeded threshold.\n"
+                f"Found {len(untagged)} untagged resources (auto-tagged).\n"
+                f"Report: https://s3.../cost-reports/{today}.html"
+    )
+    
+    return {'statusCode': 200}
 
 ---
 
@@ -315,18 +611,37 @@ X-Ray shows the FULL request journey across all services with timing per hop. In
 
 ### 2-Minute Version
 
-"Built an event-driven image processing pipeline using serverless on AWS. API Gateway handles REST requests with Cognito authentication, Lambda processes business logic, DynamoDB stores metadata. When users upload to S3, EventBridge triggers processing Lambdas — resize, generate thumbnails, create reports. SQS decouples services for reliability (DLQ catches failures), SNS fans out notifications. Full pipeline costs $17/month for 1M requests versus $115/month if we'd used EKS. X-Ray provides distributed tracing across all Lambda invocations. Key decision: serverless for variable/event-driven workloads, containers for steady-state services. Right tool for the job."
+"Built a serverless operations automation platform that supports all our other infrastructure projects. EventBridge routes events from AWS Config (security violations), CloudWatch (EKS node health), Jenkins webhooks (deploy failures), and AWS Budgets (cost alerts) to purpose-built Lambda functions. Each Lambda performs a specific action: auto-remediate open security groups, cordon unhealthy K8s nodes, create Jira tickets on deploy failures, scan certificates for expiry, and auto-tag untagged resources for cost attribution. Account vending uses Step Functions to orchestrate the 7-step workflow (create account → apply baseline → configure SSO → notify). Everything logged to DynamoDB as audit trail, reports stored in S3, notifications via Slack/PagerDuty/Email. Costs $10/month total — versus $150/month if we ran this as a container service. Key design: serverless is perfect for event-driven operations automation where events are sporadic and short-lived."
+
+### How This Connects to Other Projects
+
+```
+Project 4 (Landing Zone) ──→ Account vending (Step Functions)
+                          ──→ SCP violation remediation (Lambda)
+Project 2 (3-Tier AWS)   ──→ SG auto-remediation (Lambda)
+                          ──→ Cost alerts + tagging (Lambda)
+                          ──→ Cert expiry scanning (Lambda)
+Project 3 (EKS/K8s)      ──→ Node health automation (Lambda)
+                          ──→ Pod restart alerting (Lambda)
+Project 1 (CI/CD)         ──→ Deploy failure ticketing (Lambda)
+                          ──→ Pipeline status dashboard (API GW + DynamoDB)
+```
+
+**One-liner for interview:** "This serverless platform is the glue that makes my other projects self-healing and observable. It's the automated operations layer that reacts to events across the entire infrastructure."
 
 ### Key Interview Q&A
 
-**Q: "Why not just use containers for everything?"**  
-A: Containers make sense for steady, long-running services. But for event-driven tasks (file upload → process, API with variable traffic, cron jobs), serverless is cheaper, faster to deploy, and zero ops. We use both — containers for core services, serverless for glue and events.
+**Q: "Why serverless for this and not a container service?"**  
+A: Events are sporadic (5-50/day). A container running 24/7 to handle 5 events = $150/month wasted. Lambda runs for 2-10 seconds per event, costs $0.0001 per execution. Total monthly cost: ~$10. Also zero ops — no patching, no scaling, no on-call for the automation platform itself.
 
-**Q: "How do you handle Lambda cold starts?"**  
-A: Three approaches. (1) Keep functions small (fast init). (2) Provisioned concurrency for latency-critical paths ($$$). (3) Warm-up scheduled event every 5 min for critical functions. For most APIs, 200ms cold start is acceptable — users don't notice.
+**Q: "What if Lambda fails to remediate?"**  
+A: Three safety nets. (1) DLQ — failed event goes to dead letter queue after 3 retries. (2) CloudWatch alarm on DLQ depth > 0 → alerts team. (3) All actions logged to DynamoDB — we can replay or investigate. Plus, AWS Config will re-fire the event if the violation persists (self-correcting).
 
-**Q: "What happens if Lambda fails?"**  
-A: DLQ (Dead Letter Queue). Failed event goes to SQS DLQ after 3 retries. CloudWatch alarm on DLQ message count. We investigate, fix, replay messages from DLQ. Data is never lost.
+**Q: "How do you test this?"**  
+A: SAM CLI locally (`sam local invoke` with sample EventBridge events). Integration tests in staging account that intentionally create violations → verify Lambda remediates within 60 seconds → verify DynamoDB audit record → verify Slack notification received.
 
-**Q: "How do you test serverless locally?"**  
-A: AWS SAM CLI — `sam local invoke` runs Lambda in Docker locally with real event payloads. `sam local start-api` simulates full API Gateway. Integration tests hit staging with real AWS services.
+**Q: "Why EventBridge over direct Lambda triggers?"**  
+A: Decoupling. Config doesn't know which Lambda handles it — EventBridge routes based on rules. If we add a new automation (e.g., auto-fix unencrypted EBS), we add a new rule + Lambda — zero changes to existing code. Also: one event can trigger multiple targets (remediate AND notify AND log).
+
+**Q: "Why Step Functions for account vending instead of one Lambda?"**  
+A: Account creation takes 10-15 minutes (waiting for AWS to activate the account, running Terraform, health checks). Single Lambda max is 15 min — too risky. Step Functions handles: retries per step, visual debugging (see exactly which step failed), wait states (pause for account activation), and parallel execution (SSO + networking in parallel).
