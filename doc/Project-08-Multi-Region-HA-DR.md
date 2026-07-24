@@ -165,6 +165,19 @@ RTO impact: Users had errors for ~3 minutes
 
 ### Why Active-Passive Over Active-Active?
 
+### DR Strategy Tiers (Choose Based on Budget & Requirements)
+
+| Strategy | RTO | RPO | Monthly DR Cost | How It Works |
+|---|---|---|---|---|
+| **Backup & Restore** | 2-4 hours | 1 hour | ~$50 (S3 snapshots only) | Take backups to DR region. On failure: restore from snapshot, spin up infra. Slowest but cheapest. |
+| **Pilot Light** ⬅️ Our Choice | 15-30 min | ~1 sec | ~$150 (DB replica only) | Aurora cross-region replica always running. On failure: promote DB, launch compute. |
+| **Warm Standby** | 5-10 min | <1 sec | ~$400 (scaled-down copy) | Full stack running at minimum capacity in DR. On failure: scale up. |
+| **Active-Active** | ~0 (instant) | 0 | ~$760 (full duplicate) | Both regions serve traffic simultaneously. Aurora Global or DynamoDB Global Tables. |
+
+**Why we chose Pilot Light:** Best cost/recovery balance. $150/month for <5 min RTO is acceptable for our $2M/hour revenue. Active-Active ($760/month) gives instant failover but adds write-conflict complexity we don't need.
+
+### Active-Passive vs Active-Active (Detailed)
+
 | Factor | Active-Active | Active-Passive (Our Choice) |
 |---|---|---|
 | Cost | 2x (full infra in both regions) | ~1.3x (DR infra minimal until failover) |

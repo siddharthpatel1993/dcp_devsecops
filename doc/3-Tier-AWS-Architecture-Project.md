@@ -520,6 +520,63 @@ DATA SUBNET NACL:
 
 ---
 
+### Why This Architecture is Highly Available (HA)
+
+The above VPC design ensures **zero downtime** for any single component failure. Here's how HA is achieved at EVERY layer:
+
+**1. Network Layer (VPC spans 3 AZs):**
+- VPC has subnets in 3 independent Availability Zones (AZ-a, AZ-b, AZ-c)
+- Each AZ is a separate physical data center with independent power, cooling, networking
+- If one entire AZ goes down → two remain fully operational
+
+**2. Web Layer (ALB across 3 AZs):**
+- One ALB is created → AWS places internal nodes in all 3 public subnets (one per AZ)
+- AZ-a fails → ALB nodes in AZ-b and AZ-c continue receiving traffic automatically
+- Users don't notice — DNS returns healthy ALB node IPs only
+
+**3. Compute Layer (ASG maintains EC2 across 3 AZs):**
+- ASG ensures minimum 3 EC2 instances running — one in each AZ
+- EC2 dies → ASG detects via health check → launches replacement in seconds
+- ALB health checks every 15 seconds → unhealthy instance gets ZERO traffic instantly
+- Other healthy instances serve while replacement boots
+
+**4. Database Layer (Aurora Multi-AZ):**
+- Primary (writer) in AZ-a, Replica (reader) in AZ-b
+- AZ-a fails → Aurora automatically promotes replica to primary in <30 seconds
+- Writer endpoint DNS flips to new primary — application reconnects automatically
+- AZ-c subnet available for adding another replica if needed
+
+**5. Network Resilience (NAT Gateway per AZ):**
+- One NAT Gateway in each public subnet (3 total)
+- NAT in AZ-a fails → only AZ-a private servers lose outbound temporarily
+- AZ-b and AZ-c private servers continue to reach internet normally
+- Each private subnet routes to ITS OWN AZ's NAT (no cross-AZ dependency)
+
+**6. Security (SG Chaining — defence in depth):**
+- ALB-SG → APP-SG → DB-SG (each tier only talks to adjacent tier)
+- Even if one tier is compromised, attacker can't jump directly to database
+- NACLs provide additional subnet-level protection
+
+**Result: Any Single Failure → Zero User Downtime**
+
+| Failure Scenario | What Happens | User Impact |
+|---|---|---|
+| One EC2 instance crashes | ASG replaces in 2-3 min. ALB routes to other 2 instances. | None ✅ |
+| One entire AZ goes down | ALB + ASG + Aurora failover to remaining 2 AZs | None ✅ |
+| Aurora primary dies | Replica promoted in <30 sec. Writer endpoint flips. | ~30 sec blip |
+| One NAT Gateway fails | Only that AZ's private subnet loses outbound. Others fine. | None ✅ (app still serves) |
+| ALB node in one AZ fails | Other 2 ALB nodes serve all traffic | None ✅ |
+
+**This is what makes the architecture "Highly Available" — no single point of failure at any layer. Every component is redundant across multiple AZs.**
+
+> **Note on Global Services (Route53, CloudFront, WAF):** These are AWS global services — inherently highly available across 100+ edge locations. You don't need to make them HA — AWS guarantees it. You only create one of each. Your HA responsibility starts at the regional level: ALB across 3 AZs, ASG across 3 AZs, Aurora Multi-AZ. Global services are AWS's problem, regional services are YOUR problem. Route53 health check monitors YOUR ALB → if ALB dies → Route53 routes to DR region. This is your DR strategy (Project 8), not Route53's HA.
+
+> **Note on ALB Scope:** ALB is regional — routes traffic across AZs within one region only. It CANNOT send traffic to another region. For cross-region routing, we use Route53 failover (our DR strategy in Project 8) or Global Accelerator. Each region has its own ALB, and Route53 decides which region's ALB receives traffic.
+
+> **Note on HA vs DR:** HA within a region = spread across AZs using ALB + ASG + Aurora Multi-AZ (Project 2). HA across regions = duplicate infrastructure in a second region with Route53 failover (Project 8 — DR). Same Terraform modules, different region parameter. Regional resources can't span regions — you must create separate copies.
+
+---
+
 ## 9. Web Tier (ALB + WAF + CloudFront)
 
 ### Application Load Balancer (ALB)
@@ -1130,6 +1187,8 @@ Scheduled: Every 6 hours
 
 ## 19. Backup & Disaster Recovery Strategy
 
+## 19. Backup & Recovery Strategy
+
 ### Backup Strategy
 
 | Component | Backup Method | Frequency | Retention | Restore Time |
@@ -1141,95 +1200,22 @@ Scheduled: Every 6 hours
 | Terraform state | S3 versioning on state bucket | Every apply | 90 days | Restore previous version |
 | Application config | Git (version controlled) | Every commit | Forever | Git checkout |
 
-### Disaster Recovery — Single Region Failure
+### Within-Region Recovery Scenarios (HA — handled by this architecture)
 
-**Architecture:**
+| Scenario | Recovery Action | Time | Human Needed? |
+|---|---|---|---|
+| Single EC2 instance dies | ASG auto-replaces (health check) | 2-3 min | No |
+| Entire AZ goes down | ALB routes to other 2 AZs automatically | 0 (instant) | No |
+| RDS primary fails | Aurora auto-failover to replica (same region) | <30 sec | No |
+| Accidental data deletion | Aurora point-in-time restore (any second in last 7 days) | 10-15 min | Yes |
+| Terraform state corrupted | Restore from S3 versioned backup | 2 min | Yes |
+| Bad deployment (app bug) | Revert Launch Template to previous AMI → instance refresh | 5 min | No (automated) |
 
-```
-PRIMARY REGION (us-east-1)              DR REGION (eu-west-1)
-┌─────────────────────┐                ┌─────────────────────┐
-│  ALB + ASG + App    │                │  ALB + ASG (scaled  │
-│  Aurora Primary     │───replication──▶│  to zero or min)    │
-│  S3 bucket          │───CRR─────────▶│  Aurora Replica     │
-│  Route53 ──────────────failover──────▶│  S3 replica bucket  │
-└─────────────────────┘                └─────────────────────┘
-```
+### Cross-Region Disaster Recovery
 
-### DR Tiers (Choose Based on Budget)
-
-| Strategy | RTO | RPO | Monthly Cost | How It Works |
-|---|---|---|---|---|
-| **Backup & Restore** | 2-4 hours | 1 hour | ~$50 (S3 snapshots only) | Restore from snapshot in DR region on failure |
-| **Pilot Light** | 15-30 min | ~1 min | ~$150 (DB replica only) | Aurora cross-region replica running, compute launched on failure |
-| **Warm Standby** | 5-10 min | <1 min | ~$400 (scaled-down copy) | Full stack running at min capacity, scale up on failure |
-| **Active-Active** | ~0 (instant) | 0 | ~$760 (full duplicate) | Both regions serve traffic, Aurora Global Database |
-
-### Our Choice: Pilot Light (Best Cost/Recovery Balance)
-
-**Normal operation:**
-- Primary region handles 100% traffic
-- Aurora cross-region read replica in DR region (async, <1s lag)
-- S3 CRR enabled (real-time replication)
-- Terraform code can spin up full stack in DR region in 10 min
-- Route53 health check monitors primary ALB every 10 seconds
-
-**On failure (primary region down):**
-1. Route53 health check fails (3 consecutive = 30 seconds)
-2. DNS failover to DR region ALB (TTL 60s → users switch in ~90s)
-3. Aurora replica promoted to primary (<30 seconds)
-4. ASG in DR region scales from 0 → 3 instances (2-3 minutes)
-5. **Total RTO: ~5 minutes**
-6. **RPO: <1 second** (Aurora replication lag)
-
-**Automated failover (no human needed):**
-```
-Route53 health check fails
-    → Automatic DNS failover (built-in)
-    
-CloudWatch alarm (primary ALB unhealthy)
-    → EventBridge rule
-    → Lambda function:
-        1. Promote Aurora replica
-        2. Update ASG desired capacity (0 → 3)
-        3. Notify team via PagerDuty + Slack
-        4. Log event for audit
-```
-
-### DR Drill (Quarterly — Automated)
-
-```
-Schedule: First Saturday of every quarter, 6 AM
-
-Steps (automated via runbook):
-1. Simulate primary failure (Route53 health check override)
-2. Verify DNS flips to DR
-3. Verify Aurora promotes
-4. Verify ASG scales up
-5. Run smoke tests against DR endpoint
-6. Measure actual RTO (target <5 min)
-7. Failback: restore primary, flip DNS back
-8. Generate DR report → S3 → Slack notification
-
-Result: "DR drill passed. RTO: 4 min 23 sec. RPO: 0.8 sec."
-```
-
-### Key Recovery Scenarios
-
-| Scenario | Recovery Action | Time |
-|---|---|---|
-| Single EC2 instance dies | ASG auto-replaces (health check) | 2-3 min |
-| Entire AZ goes down | ALB routes to other 2 AZs automatically | 0 (instant, already load balanced) |
-| RDS primary fails | Aurora auto-failover to replica (same region) | <30 sec |
-| Entire region fails | Route53 failover → DR region (pilot light) | ~5 min |
-| Accidental data deletion | Aurora point-in-time restore (any second in last 7 days) | 10-15 min |
-| Terraform state corrupted | Restore from S3 versioned backup | 2 min |
-| Bad deployment (app bug) | Revert Launch Template to previous AMI → instance refresh | 5 min |
-
-### Interview Quick Answer
-
-**Q: "What's your DR strategy?"**
-
-A: Pilot light in a secondary region. Aurora cross-region replica for <1s RPO, Route53 health-check failover for automatic DNS switch, Lambda for automated promotion and scaling. Quarterly automated DR drills prove RTO <5 minutes. For single-region failures (AZ down), multi-AZ ALB + Aurora handles it automatically with zero downtime. For data recovery, Aurora point-in-time restore to any second in the last 7 days.
+> **Full DR strategy is documented in Project 8 (Multi-Region HA & DR).** This includes: Pilot Light architecture, Route53 failover, Aurora Global Database, S3 Cross-Region Replication, automated failover via Lambda, and quarterly DR drills. Refer to Project 8 for complete details.
+>
+> **Summary:** Pilot Light DR in us-west-2. RTO: ~3 minutes. RPO: <1 second. Validated quarterly.
 
 ---
 
